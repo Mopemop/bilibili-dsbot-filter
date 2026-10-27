@@ -2,7 +2,7 @@
 // @name         B站大肥鱼过滤器（DeepSeek 机器人）
 // @name:en      Bilibili DeepSeek Bot Comment Filter
 // @name:zh-CN   B站大肥鱼过滤器（DeepSeek 机器人）
-// @version      1.5.1
+// @version      1.6.0
 // @description  在 B 站视频评论区识别 DeepSeek「大肥鱼」机器人的主评论：最新/最热里隐藏，新增「大肥鱼」视图只展示它们及其楼中楼。
 // @description:en  Filter DeepSeek bot comments on Bilibili video pages: hide them in "Hot/Latest", add a "Big Fat Fish" tab that only shows the detected bot comments.
 // @description:zh-CN  在 B 站视频评论区识别 DeepSeek「大肥鱼」机器人的主评论：最新/最热里隐藏，新增「大肥鱼」视图只展示它们及其楼中楼。
@@ -40,7 +40,7 @@ const { createStore, createDb } = __require("src/core/store.js");
 const { DEBUG } = __require("src/core/debug.js");
 const { applyView, mountControls } = __require("src/ui/mount.js");
 const VIDEO_URL = /^https?:\/\/www\.bilibili\.com\/video\//
-const VERSION = '1.5.1'
+const VERSION = '1.6.0'
 
 function memoryStorage() {
   const map = new Map()
@@ -148,7 +148,8 @@ function boot({ window: win = globalThis.window, storage } = {}) {
 
   function compute() {
     if (destroyed) return
-    const signals = adapter.listComments().map(readSignal)
+    const elements = adapter.listComments()
+    const signals = elements.map(readSignal)
     const words = store.words()
     const { scores } = scanCommentsOnce(signals, {
       preset: settings.preset,
@@ -164,6 +165,10 @@ function boot({ window: win = globalThis.window, storage } = {}) {
       if (human) verdicts.set(signal.rpid, false)
       else if (bot) verdicts.set(signal.rpid, true)
     }
+    // 置顶评论永远不算机器人
+    elements.forEach((element, index) => {
+      if (adapter.isPinned?.(element)) verdicts.set(signals[index].rpid, false)
+    })
     botCount = [...verdicts.values()].filter(Boolean).length
   }
 
@@ -450,7 +455,7 @@ Object.assign(exports, { DEBUG });
 });
 
 __define("src/adapters/v3.js", function (exports, __require) {
-const { queryDeep, queryDeepOne, findTabRow, observeDeep, normalizeUrl, fallbackRpid, triggerMore } = __require("src/adapters/shadow.js");
+const { queryDeep, queryDeepOne, findTabRow, observeDeep, normalizeUrl, fallbackRpid, triggerMore, isPinned } = __require("src/adapters/shadow.js");
 const HOST = 'bili-comments'
 const THREAD = 'bili-comment-thread-renderer'
 const LEVEL = /level_(\d)\.svg/
@@ -504,6 +509,7 @@ function createV3(host) {
     root: host,
     listComments: () => queryDeep(host, THREAD),
     getSortRow: () => findTabRow(host),
+    isPinned,
     readComment(element) {
       const data = litData(element)
       return data ? readFromData(data, element) : readFromDom(element)
@@ -650,6 +656,29 @@ function triggerMore({ root, items }) {
   return true
 }
 
+/**
+ * 置顶评论识别：B 站各版本都用「置顶」小标签或 top/pinned 相关 class 标记。
+ * 只看短文本标签，避免正文里出现「置顶」两个字被误判。
+ */
+function isPinned(element) {
+  if (!element?.querySelectorAll) return false
+  try {
+    if (/pinned/i.test(element.className ?? '')) return true
+    const classes = [...(element.classList ?? [])]
+    if (classes.some((name) => /^(is-)?top(ped)?$/i.test(name))) return true
+    const label = element.getAttribute?.('aria-label') ?? ''
+    if (label.includes('置顶')) return true
+    for (const el of element.querySelectorAll('span, div, i, em, b, p, img[alt]')) {
+      const text = (el.textContent ?? '').trim()
+      if (text === '置顶' && text.length <= 2) return true
+      if ((el.getAttribute?.('alt') ?? '').includes('置顶')) return true
+    }
+  } catch {
+    /* 忽略 */
+  }
+  return false
+}
+
 const hooks = new Set()
 let hooked = false
 
@@ -702,11 +731,11 @@ function observeDeep(root, callback) {
   }
 }
 
-Object.assign(exports, { normalizeUrl, queryDeep, queryDeepOne, fallbackRpid, findTabRow, triggerMore, onShadowCreated, observeDeep });
+Object.assign(exports, { normalizeUrl, queryDeep, queryDeepOne, fallbackRpid, findTabRow, triggerMore, isPinned, onShadowCreated, observeDeep });
 });
 
 __define("src/adapters/v2.js", function (exports, __require) {
-const { findTabRow, observeDeep, normalizeUrl, fallbackRpid, triggerMore } = __require("src/adapters/shadow.js");
+const { findTabRow, observeDeep, normalizeUrl, fallbackRpid, triggerMore, isPinned } = __require("src/adapters/shadow.js");
 const ROOT = '.bili-comment'
 
 function mainComments(root) {
@@ -743,6 +772,7 @@ function createV2(root) {
     listComments: () => mainComments(root),
     getSortRow: () => findTabRow(root),
     readComment,
+    isPinned,
     loadMore: () => triggerMore({ root, items: mainComments(root) }),
     subscribe(callback) {
       return observeDeep(root, callback)
@@ -760,7 +790,7 @@ Object.assign(exports, { createV2, v2 });
 });
 
 __define("src/adapters/v1.js", function (exports, __require) {
-const { findTabRow, observeDeep, normalizeUrl, fallbackRpid, triggerMore } = __require("src/adapters/shadow.js");
+const { findTabRow, observeDeep, normalizeUrl, fallbackRpid, triggerMore, isPinned } = __require("src/adapters/shadow.js");
 const ROOT = '.bb-comment'
 
 function mainComments(root) {
@@ -796,6 +826,7 @@ function createV1(root) {
     listComments: () => mainComments(root),
     getSortRow: () => findTabRow(root),
     readComment,
+    isPinned,
     loadMore: () => triggerMore({ root, items: mainComments(root) }),
     subscribe(callback) {
       return observeDeep(root, callback)
@@ -1390,6 +1421,13 @@ function applyView({ adapter, verdicts = new Map(), view = 'hot' }) {
 
   const hasVerdicts = Boolean(verdicts?.size)
   for (const element of adapter.listComments?.() ?? []) {
+    // 置顶评论永远显示，两种视图都不动它
+    if (adapter.isPinned?.(element)) {
+      element.removeAttribute('data-bdf-bot')
+      element.style.display = ''
+      delete element.dataset.bdfHidden
+      continue
+    }
     if (view === 'off' || !hasVerdicts) {
       element.removeAttribute('data-bdf-bot')
       // 强制显示：可能被旧版本 / 上一次运行隐藏过

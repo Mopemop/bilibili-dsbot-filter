@@ -296,3 +296,25 @@ test('start：首页 SPA 跳到视频页后自动生效（不重新加载页面�
 })
 
 
+
+test('置顶评论：最热和大肥鱼里都始终显示', () => {
+  const { dom } = mount('v2')
+  const controller = boot({ window: dom.window, storage: memoryStorage() })
+  try {
+    const document = dom.window.document
+    const comments = controller.adapter.listComments()
+    // 给“真人”那条打上置顶标记，再让规则把它判成机器人也不该被隐藏
+    const tag = document.createElement('span')
+    tag.textContent = '置顶'
+    comments[1].prepend(tag)
+    controller.compute()
+    controller.render()
+
+    assert.notEqual(comments[1].style.display, 'none', '最热里置顶应显示')
+    document.querySelector('#bdf-slot').shadowRoot.querySelector('.bdf-tab').click()
+    assert.notEqual(comments[1].style.display, 'none', '大肥鱼里置顶也应显示')
+  } finally {
+    controller.destroy()
+    dom.window.close()
+  }
+})

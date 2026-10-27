@@ -187,3 +187,15 @@ test('v2：没有按钮时只把最后一条评论滚进视野，不整页跳底
   assert.equal(scrolled, 1)
   assert.equal(pageScrolls, 0)
 })
+
+test('isPinned：识别「置顶」标签，忽略正文里的置顶二字', () => {
+  const { document } = mount('v2')
+  const adapter = detectAdapter(document)
+  const [first] = adapter.listComments()
+  assert.equal(adapter.isPinned(first), false)
+
+  const tag = document.createElement('span')
+  tag.textContent = '置顶'
+  first.prepend(tag)
+  assert.equal(adapter.isPinned(first), true)
+})

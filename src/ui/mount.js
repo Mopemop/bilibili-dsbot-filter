@@ -74,6 +74,13 @@ export function applyView({ adapter, verdicts = new Map(), view = 'hot' }) {
 
   const hasVerdicts = Boolean(verdicts?.size)
   for (const element of adapter.listComments?.() ?? []) {
+    // 置顶评论永远显示，两种视图都不动它
+    if (adapter.isPinned?.(element)) {
+      element.removeAttribute('data-bdf-bot')
+      element.style.display = ''
+      delete element.dataset.bdfHidden
+      continue
+    }
     if (view === 'off' || !hasVerdicts) {
       element.removeAttribute('data-bdf-bot')
       // 强制显示：可能被旧版本 / 上一次运行隐藏过

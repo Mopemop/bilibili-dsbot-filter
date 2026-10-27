@@ -1,4 +1,4 @@
-import { findTabRow, observeDeep, normalizeUrl, fallbackRpid, triggerMore } from './shadow.js'
+import { findTabRow, observeDeep, normalizeUrl, fallbackRpid, triggerMore, isPinned } from './shadow.js'
 
 const ROOT = '.bb-comment'
 
@@ -35,6 +35,7 @@ export function createV1(root) {
     listComments: () => mainComments(root),
     getSortRow: () => findTabRow(root),
     readComment,
+    isPinned,
     loadMore: () => triggerMore({ root, items: mainComments(root) }),
     subscribe(callback) {
       return observeDeep(root, callback)

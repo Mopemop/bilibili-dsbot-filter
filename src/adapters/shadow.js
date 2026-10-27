@@ -122,6 +122,29 @@ export function triggerMore({ root, items }) {
   return true
 }
 
+/**
+ * 置顶评论识别：B 站各版本都用「置顶」小标签或 top/pinned 相关 class 标记。
+ * 只看短文本标签，避免正文里出现「置顶」两个字被误判。
+ */
+export function isPinned(element) {
+  if (!element?.querySelectorAll) return false
+  try {
+    if (/pinned/i.test(element.className ?? '')) return true
+    const classes = [...(element.classList ?? [])]
+    if (classes.some((name) => /^(is-)?top(ped)?$/i.test(name))) return true
+    const label = element.getAttribute?.('aria-label') ?? ''
+    if (label.includes('置顶')) return true
+    for (const el of element.querySelectorAll('span, div, i, em, b, p, img[alt]')) {
+      const text = (el.textContent ?? '').trim()
+      if (text === '置顶' && text.length <= 2) return true
+      if ((el.getAttribute?.('alt') ?? '').includes('置顶')) return true
+    }
+  } catch {
+    /* 忽略 */
+  }
+  return false
+}
+
 const hooks = new Set()
 let hooked = false
 

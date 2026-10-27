@@ -6,6 +6,7 @@ import {
   normalizeUrl,
   fallbackRpid,
   triggerMore,
+  isPinned,
 } from './shadow.js'
 
 const HOST = 'bili-comments'
@@ -61,6 +62,7 @@ export function createV3(host) {
     root: host,
     listComments: () => queryDeep(host, THREAD),
     getSortRow: () => findTabRow(host),
+    isPinned,
     readComment(element) {
       const data = litData(element)
       return data ? readFromData(data, element) : readFromDom(element)

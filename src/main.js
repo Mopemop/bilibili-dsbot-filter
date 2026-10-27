@@ -6,7 +6,7 @@ import { DEBUG } from './core/debug.js'
 import { applyView, mountControls } from './ui/mount.js'
 
 const VIDEO_URL = /^https?:\/\/www\.bilibili\.com\/video\//
-const VERSION = '1.5.1'
+const VERSION = '1.6.0'
 
 function memoryStorage() {
   const map = new Map()
@@ -116,7 +116,8 @@ export function boot({ window: win = globalThis.window, storage } = {}) {
 
   function compute() {
     if (destroyed) return
-    const signals = adapter.listComments().map(readSignal)
+    const elements = adapter.listComments()
+    const signals = elements.map(readSignal)
     const words = store.words()
     const { scores } = scanCommentsOnce(signals, {
       preset: settings.preset,
@@ -132,6 +133,10 @@ export function boot({ window: win = globalThis.window, storage } = {}) {
       if (human) verdicts.set(signal.rpid, false)
       else if (bot) verdicts.set(signal.rpid, true)
     }
+    // 置顶评论永远不算机器人
+    elements.forEach((element, index) => {
+      if (adapter.isPinned?.(element)) verdicts.set(signals[index].rpid, false)
+    })
     botCount = [...verdicts.values()].filter(Boolean).length
   }
 
