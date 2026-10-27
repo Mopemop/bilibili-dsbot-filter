@@ -1,0 +1,10 @@
+node_modules/
+.npm-cache/
+.tmp/
+*.log
+
+# 内部规格与调研不随仓库发布
+openspec/
+research/
+
+.tmp-*.mjs

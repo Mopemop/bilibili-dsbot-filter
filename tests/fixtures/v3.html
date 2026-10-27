@@ -1,0 +1,57 @@
+<!doctype html>
+<html>
+  <head><title>v3 fixture</title></head>
+  <body>
+    <div id="app">
+      <bili-comments data-bdf-shadow>
+        <div class="comment-header">
+          <span class="comment-title">评论 128</span>
+          <div class="reply-sort">
+            <span class="sort-item is-active">最热</span>
+            <span class="sort-item">最新</span>
+          </div>
+        </div>
+
+        <bili-comment-thread-renderer data-bdf-shadow>
+          <div id="comment">
+            <bili-comment-renderer data-bdf-shadow>
+              <bili-comment-user-info data-bdf-shadow>
+                <div id="info">
+                  <div id="user-name"><a href="//space.bilibili.com/111">蓝紫色大肥鱼</a></div>
+                  <div id="user-level"><img src="//i0.hdslb.com/bfs/face/level_2.svg"></div>
+                </div>
+              </bili-comment-user-info>
+              <div id="avatar"><img src="//i0.hdslb.com/bfs/face/aaa.jpg"></div>
+              <bili-rich-text data-bdf-shadow>
+                <div id="contents">一顿紫薯糯米饭就盖成了一整个故宫，本公主这本事厉害吧</div>
+              </bili-rich-text>
+            </bili-comment-renderer>
+          </div>
+          <bili-comment-replies-renderer data-bdf-shadow>
+            <bili-comment-reply-renderer data-bdf-shadow>
+              <div class="reply-text">楼中楼回复内容</div>
+            </bili-comment-reply-renderer>
+          </bili-comment-replies-renderer>
+        </bili-comment-thread-renderer>
+
+        <bili-comment-thread-renderer data-bdf-shadow>
+          <div id="comment">
+            <bili-comment-renderer data-bdf-shadow>
+              <bili-comment-user-info data-bdf-shadow>
+                <div id="info">
+                  <div id="user-name"><a href="//space.bilibili.com/222">鲸鱼娘0705</a></div>
+                  <div id="user-level"><img src="//i0.hdslb.com/bfs/face/level_1.svg"></div>
+                </div>
+              </bili-comment-user-info>
+              <div id="avatar"><img src="//i0.hdslb.com/bfs/face/bbb.jpg"></div>
+              <bili-rich-text data-bdf-shadow>
+                <div id="contents">四毛钱一千条鱼，本鱼不接这活，我搬砖要加鸡腿</div>
+              </bili-rich-text>
+            </bili-comment-renderer>
+          </div>
+          <bili-comment-replies-renderer data-bdf-shadow></bili-comment-replies-renderer>
+        </bili-comment-thread-renderer>
+      </bili-comments>
+    </div>
+  </body>
+</html>
