@@ -155,6 +155,18 @@ export function nearBottom(metrics, threshold = 900) {
   return distanceToBottom(metrics) <= threshold
 }
 
+/**
+ * 评论区尾部是否接近视口：按最后一条评论的 bottom 判断，
+ * 避免「页面很短，滚到一半就落在页面底部阈值内」。
+ */
+export function nearListEnd(rect, innerHeight = 0, margin = 700) {
+  if (!rect) return false
+  const bottom = Number(rect.bottom ?? NaN)
+  if (!Number.isFinite(bottom)) return false
+  if (bottom <= 0) return false
+  return bottom <= Number(innerHeight) + margin
+}
+
 const hooks = new Set()
 let hooked = false
 

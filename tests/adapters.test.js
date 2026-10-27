@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { JSDOM } from 'jsdom'
 import { detectAdapter } from '../src/adapters/index.js'
-import { findTabRow, nearBottom, distanceToBottom } from '../src/adapters/shadow.js'
+import { findTabRow, nearBottom, distanceToBottom, nearListEnd } from '../src/adapters/shadow.js'
 
 function fixtureHtml(name) {
   return readFileSync(new URL(`./fixtures/${name}.html`, import.meta.url), 'utf8')
@@ -241,4 +241,13 @@ test('silent 模式：没有按钮时不做任何事（不乱滚）', () => {
   const adapter = detectAdapter(document)
   assert.equal(adapter.loadMore({ silent: true }), false)
   assert.equal(scrolls, 0)
+})
+
+test('nearListEnd：按最后一条评论的位置判断，提前一屏半就触发', () => {
+  assert.equal(nearListEnd({ bottom: 1200 }, 800, 700), true)
+  assert.equal(nearListEnd({ bottom: 1600 }, 800, 700), false)
+  assert.equal(nearListEnd({ bottom: 0 }, 800, 700), false)
+  assert.equal(nearListEnd(null, 800, 700), false)
+  // 1.5 屏：视口 800 → margin 1200，最后一条在视口下 1500 也算接近
+  assert.equal(nearListEnd({ bottom: 1500 }, 800, 1200), true)
 })

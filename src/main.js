@@ -1,12 +1,12 @@
 import { detectAdapter, degrade } from './adapters/index.js'
-import { queryDeepOne, queryDeep, onShadowCreated, nearBottom } from './adapters/shadow.js'
+import { queryDeepOne, queryDeep, onShadowCreated, nearListEnd } from './adapters/shadow.js'
 import { scanCommentsOnce } from './core/score.js'
 import { createStore, createDb } from './core/store.js'
 import { DEBUG } from './core/debug.js'
 import { applyView, mountControls } from './ui/mount.js'
 
 const VIDEO_URL = /^https?:\/\/www\.bilibili\.com\/video\//
-const VERSION = '1.6.1'
+const VERSION = '1.6.2'
 
 function memoryStorage() {
   const map = new Map()
@@ -190,13 +190,13 @@ export function boot({ window: win = globalThis.window, storage } = {}) {
   /** 距离底部还有一段就开始加载，避免「必须拉到底」才出评论 */
   function preloadTick() {
     if (destroyed || preloadDisabled) return
-    const doc = win.document
-    const metrics = {
-      scrollY: win.scrollY ?? 0,
-      innerHeight: win.innerHeight ?? 0,
-      scrollHeight: doc?.documentElement?.scrollHeight ?? 0,
-    }
-    if (!nearBottom(metrics, 900)) return
+    // 只按「评论区最后一条」判断，滑到一半不会误触发
+    const items = adapter.listComments()
+    const last = items[items.length - 1]
+    const rect = last?.getBoundingClientRect?.()
+    // 提前约 1.5 屏（大约滑到评论区一半）就开始加载
+    const viewH = win.innerHeight ?? 800
+    if (!nearListEnd(rect, viewH, Math.round(viewH * 1.5))) return
     const now = Date.now()
     if (now - preloadAt < 1500) return
     preloadAt = now

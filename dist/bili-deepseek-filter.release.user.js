@@ -2,7 +2,7 @@
 // @name         B站大肥鱼过滤器（DeepSeek 机器人）
 // @name:en      Bilibili DeepSeek Bot Comment Filter
 // @name:zh-CN   B站大肥鱼过滤器（DeepSeek 机器人）
-// @version      1.6.1
+// @version      1.6.2
 // @description  在 B 站视频评论区识别 DeepSeek「大肥鱼」机器人的主评论：最新/最热里隐藏，新增「大肥鱼」视图只展示它们及其楼中楼。
 // @description:en  Filter DeepSeek bot comments on Bilibili video pages: hide them in "Hot/Latest", add a "Big Fat Fish" tab that only shows the detected bot comments.
 // @description:zh-CN  在 B 站视频评论区识别 DeepSeek「大肥鱼」机器人的主评论：最新/最热里隐藏，新增「大肥鱼」视图只展示它们及其楼中楼。
@@ -34,13 +34,13 @@ function __require(id) {
 
 __define("src/main.js", function (exports, __require) {
 const { detectAdapter, degrade } = __require("src/adapters/index.js");
-const { queryDeepOne, queryDeep, onShadowCreated, nearBottom } = __require("src/adapters/shadow.js");
+const { queryDeepOne, queryDeep, onShadowCreated, nearListEnd } = __require("src/adapters/shadow.js");
 const { scanCommentsOnce } = __require("src/core/score.js");
 const { createStore, createDb } = __require("src/core/store.js");
 const { DEBUG } = __require("src/core/debug.js");
 const { applyView, mountControls } = __require("src/ui/mount.js");
 const VIDEO_URL = /^https?:\/\/www\.bilibili\.com\/video\//
-const VERSION = '1.6.1'
+const VERSION = '1.6.2'
 
 function memoryStorage() {
   const map = new Map()
@@ -222,13 +222,13 @@ function boot({ window: win = globalThis.window, storage } = {}) {
   /** 距离底部还有一段就开始加载，避免「必须拉到底」才出评论 */
   function preloadTick() {
     if (destroyed || preloadDisabled) return
-    const doc = win.document
-    const metrics = {
-      scrollY: win.scrollY ?? 0,
-      innerHeight: win.innerHeight ?? 0,
-      scrollHeight: doc?.documentElement?.scrollHeight ?? 0,
-    }
-    if (!nearBottom(metrics, 900)) return
+    // 只按「评论区最后一条」判断，滑到一半不会误触发
+    const items = adapter.listComments()
+    const last = items[items.length - 1]
+    const rect = last?.getBoundingClientRect?.()
+    // 提前约 1.5 屏（大约滑到评论区一半）就开始加载
+    const viewH = win.innerHeight ?? 800
+    if (!nearListEnd(rect, viewH, Math.round(viewH * 1.5))) return
     const now = Date.now()
     if (now - preloadAt < 1500) return
     preloadAt = now
@@ -739,6 +739,18 @@ function nearBottom(metrics, threshold = 900) {
   return distanceToBottom(metrics) <= threshold
 }
 
+/**
+ * 评论区尾部是否接近视口：按最后一条评论的 bottom 判断，
+ * 避免「页面很短，滚到一半就落在页面底部阈值内」。
+ */
+function nearListEnd(rect, innerHeight = 0, margin = 700) {
+  if (!rect) return false
+  const bottom = Number(rect.bottom ?? NaN)
+  if (!Number.isFinite(bottom)) return false
+  if (bottom <= 0) return false
+  return bottom <= Number(innerHeight) + margin
+}
+
 const hooks = new Set()
 let hooked = false
 
@@ -791,7 +803,7 @@ function observeDeep(root, callback) {
   }
 }
 
-Object.assign(exports, { normalizeUrl, queryDeep, queryDeepOne, fallbackRpid, findTabRow, triggerMore, isPinned, distanceToBottom, nearBottom, onShadowCreated, observeDeep });
+Object.assign(exports, { normalizeUrl, queryDeep, queryDeepOne, fallbackRpid, findTabRow, triggerMore, isPinned, distanceToBottom, nearBottom, nearListEnd, onShadowCreated, observeDeep });
 });
 
 __define("src/adapters/v2.js", function (exports, __require) {
