@@ -104,8 +104,12 @@ __require(${JSON.stringify(entryId)});
 function banner() {
   return `// ==UserScript==
 // @name         B站大肥鱼过滤器（DeepSeek 机器人）
+// @name:en      Bilibili DeepSeek Bot Comment Filter
+// @name:zh-CN   B站大肥鱼过滤器（DeepSeek 机器人）
 // @version      ${pkg.version}
 // @description  在 B 站视频评论区识别 DeepSeek「大肥鱼」机器人的主评论：最新/最热里隐藏，新增「大肥鱼」视图只展示它们及其楼中楼。
+// @description:en  Filter DeepSeek bot comments on Bilibili video pages: hide them in "Hot/Latest", add a "Big Fat Fish" tab that only shows the detected bot comments.
+// @description:zh-CN  在 B 站视频评论区识别 DeepSeek「大肥鱼」机器人的主评论：最新/最热里隐藏，新增「大肥鱼」视图只展示它们及其楼中楼。
 // @author       local
 // @match        https://www.bilibili.com/*
 // @run-at       document-idle

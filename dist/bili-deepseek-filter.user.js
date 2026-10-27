@@ -1,7 +1,11 @@
 // ==UserScript==
 // @name         B站大肥鱼过滤器（DeepSeek 机器人）
-// @version      1.5.0
+// @name:en      Bilibili DeepSeek Bot Comment Filter
+// @name:zh-CN   B站大肥鱼过滤器（DeepSeek 机器人）
+// @version      1.5.1
 // @description  在 B 站视频评论区识别 DeepSeek「大肥鱼」机器人的主评论：最新/最热里隐藏，新增「大肥鱼」视图只展示它们及其楼中楼。
+// @description:en  Filter DeepSeek bot comments on Bilibili video pages: hide them in "Hot/Latest", add a "Big Fat Fish" tab that only shows the detected bot comments.
+// @description:zh-CN  在 B 站视频评论区识别 DeepSeek「大肥鱼」机器人的主评论：最新/最热里隐藏，新增「大肥鱼」视图只展示它们及其楼中楼。
 // @author       local
 // @match        https://www.bilibili.com/*
 // @run-at       document-idle
@@ -36,7 +40,7 @@ const { createStore, createDb } = __require("src/core/store.js");
 const { DEBUG } = __require("src/core/debug.js");
 const { applyView, mountControls } = __require("src/ui/mount.js");
 const VIDEO_URL = /^https?:\/\/www\.bilibili\.com\/video\//
-const VERSION = '1.5.0'
+const VERSION = '1.5.1'
 
 function memoryStorage() {
   const map = new Map()
