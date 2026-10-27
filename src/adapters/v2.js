@@ -37,7 +37,7 @@ export function createV2(root) {
     getSortRow: () => findTabRow(root),
     readComment,
     isPinned,
-    loadMore: () => triggerMore({ root, items: mainComments(root) }),
+    loadMore: (options = {}) => triggerMore({ root, items: mainComments(root), ...options }),
     subscribe(callback) {
       return observeDeep(root, callback)
     },

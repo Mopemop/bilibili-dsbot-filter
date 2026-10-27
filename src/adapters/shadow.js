@@ -87,7 +87,7 @@ function nearestScrollable(element) {
  * 2) 评论列表有独立滚动容器 → 只滚这个容器到底；
  * 3) 都没有 → 只把最后一条评论滚进视野，**绝不**把整页滚到 footer。
  */
-export function triggerMore({ root, items }) {
+export function triggerMore({ root, items, silent = false }) {
   const buttons = queryDeep(root, 'button, a, div, span').filter(
     (el) => el.children.length === 0 && MORE_TEXT.test((el.textContent ?? '').trim()),
   )
@@ -96,6 +96,7 @@ export function triggerMore({ root, items }) {
     button.click()
     return true
   }
+  if (silent) return false
 
   const last = items?.[items.length - 1]
   if (!last) return false
@@ -143,6 +144,15 @@ export function isPinned(element) {
     /* 忽略 */
   }
   return false
+}
+
+/** 距离页面底部还有多少像素；用于「快到底就开始加载」 */
+export function distanceToBottom({ scrollY = 0, innerHeight = 0, scrollHeight = 0 } = {}) {
+  return Math.max(0, Number(scrollHeight) - Number(scrollY) - Number(innerHeight))
+}
+
+export function nearBottom(metrics, threshold = 900) {
+  return distanceToBottom(metrics) <= threshold
 }
 
 const hooks = new Set()

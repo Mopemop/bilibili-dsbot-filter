@@ -67,7 +67,8 @@ export function createV3(host) {
       const data = litData(element)
       return data ? readFromData(data, element) : readFromDom(element)
     },
-    loadMore: () => triggerMore({ root: host, items: queryDeep(host, THREAD) }),
+    loadMore: (options = {}) =>
+      triggerMore({ root: host, items: queryDeep(host, THREAD), ...options }),
     subscribe(callback) {
       return observeDeep(host, callback)
     },

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { JSDOM } from 'jsdom'
 import { detectAdapter } from '../src/adapters/index.js'
-import { findTabRow } from '../src/adapters/shadow.js'
+import { findTabRow, nearBottom, distanceToBottom } from '../src/adapters/shadow.js'
 
 function fixtureHtml(name) {
   return readFileSync(new URL(`./fixtures/${name}.html`, import.meta.url), 'utf8')
@@ -198,4 +198,47 @@ test('isPinned：识别「置顶」标签，忽略正文里的置顶二字', () 
   tag.textContent = '置顶'
   first.prepend(tag)
   assert.equal(adapter.isPinned(first), true)
+})
+
+test('nearBottom：距离底部 900px 内算接近', () => {
+  assert.equal(distanceToBottom({ scrollY: 0, innerHeight: 800, scrollHeight: 1500 }), 700)
+  assert.equal(nearBottom({ scrollY: 0, innerHeight: 800, scrollHeight: 1500 }, 900), true)
+  assert.equal(nearBottom({ scrollY: 0, innerHeight: 800, scrollHeight: 2000 }, 900), false)
+  assert.equal(nearBottom({ scrollY: 400, innerHeight: 800, scrollHeight: 2000 }, 900), true)
+})
+
+test('silent 模式：只点加载更多，不滚动页面', () => {
+  const { dom, document } = mount('v2')
+  const more = document.createElement('div')
+  more.textContent = '点击查看更多'
+  document.querySelector('.reply-list').appendChild(more)
+  let clicked = 0
+  more.addEventListener('click', () => {
+    clicked += 1
+  })
+  let scrolls = 0
+  dom.window.scrollTo = () => {
+    scrolls += 1
+  }
+  dom.window.HTMLElement.prototype.scrollIntoView = () => {
+    scrolls += 1
+  }
+  const adapter = detectAdapter(document)
+  assert.equal(adapter.loadMore({ silent: true }), true)
+  assert.equal(clicked, 1)
+  assert.equal(scrolls, 0)
+})
+
+test('silent 模式：没有按钮时不做任何事（不乱滚）', () => {
+  const { dom, document } = mount('v2')
+  let scrolls = 0
+  dom.window.scrollTo = () => {
+    scrolls += 1
+  }
+  dom.window.HTMLElement.prototype.scrollIntoView = () => {
+    scrolls += 1
+  }
+  const adapter = detectAdapter(document)
+  assert.equal(adapter.loadMore({ silent: true }), false)
+  assert.equal(scrolls, 0)
 })

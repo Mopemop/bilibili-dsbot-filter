@@ -2,7 +2,7 @@
 // @name         B站大肥鱼过滤器（DeepSeek 机器人）
 // @name:en      Bilibili DeepSeek Bot Comment Filter
 // @name:zh-CN   B站大肥鱼过滤器（DeepSeek 机器人）
-// @version      1.6.0
+// @version      1.6.1
 // @description  在 B 站视频评论区识别 DeepSeek「大肥鱼」机器人的主评论：最新/最热里隐藏，新增「大肥鱼」视图只展示它们及其楼中楼。
 // @description:en  Filter DeepSeek bot comments on Bilibili video pages: hide them in "Hot/Latest", add a "Big Fat Fish" tab that only shows the detected bot comments.
 // @description:zh-CN  在 B 站视频评论区识别 DeepSeek「大肥鱼」机器人的主评论：最新/最热里隐藏，新增「大肥鱼」视图只展示它们及其楼中楼。
@@ -34,13 +34,13 @@ function __require(id) {
 
 __define("src/main.js", function (exports, __require) {
 const { detectAdapter, degrade } = __require("src/adapters/index.js");
-const { queryDeepOne, queryDeep, onShadowCreated } = __require("src/adapters/shadow.js");
+const { queryDeepOne, queryDeep, onShadowCreated, nearBottom } = __require("src/adapters/shadow.js");
 const { scanCommentsOnce } = __require("src/core/score.js");
 const { createStore, createDb } = __require("src/core/store.js");
 const { DEBUG } = __require("src/core/debug.js");
 const { applyView, mountControls } = __require("src/ui/mount.js");
 const VIDEO_URL = /^https?:\/\/www\.bilibili\.com\/video\//
-const VERSION = '1.6.0'
+const VERSION = '1.6.1'
 
 function memoryStorage() {
   const map = new Map()
@@ -127,6 +127,10 @@ function boot({ window: win = globalThis.window, storage } = {}) {
   let view = 'hot'
   let verdicts = new Map()
   let lastRenderKey = ''
+  let preloadAt = 0
+  let preloadStatic = 0
+  let preloadDisabled = false
+  let preloadRaf = 0
   let botCount = 0
   let destroyed = false
   let recomputeTimer = null
@@ -215,6 +219,46 @@ function boot({ window: win = globalThis.window, storage } = {}) {
 
   }
 
+  /** 距离底部还有一段就开始加载，避免「必须拉到底」才出评论 */
+  function preloadTick() {
+    if (destroyed || preloadDisabled) return
+    const doc = win.document
+    const metrics = {
+      scrollY: win.scrollY ?? 0,
+      innerHeight: win.innerHeight ?? 0,
+      scrollHeight: doc?.documentElement?.scrollHeight ?? 0,
+    }
+    if (!nearBottom(metrics, 900)) return
+    const now = Date.now()
+    if (now - preloadAt < 1500) return
+    preloadAt = now
+
+    const before = adapter.listComments().length
+    let triggered = false
+    try {
+      // 优先只点「加载更多」按钮，完全不滚动
+      triggered = adapter.loadMore?.({ silent: true }) ?? false
+      if (!triggered) adapter.loadMore?.()
+    } catch (error) {
+      degrade('预加载失败', error)
+    }
+    win.setTimeout?.(() => {
+      if (destroyed) return
+      const grew = adapter.listComments().length > before
+      preloadStatic = grew ? 0 : preloadStatic + 1
+      if (preloadStatic >= 3) preloadDisabled = true
+    }, 1500)
+  }
+
+  const onScrollPreload = () => {
+    if (preloadRaf) return
+    preloadRaf = win.requestAnimationFrame?.(() => {
+      preloadRaf = 0
+      preloadTick()
+    }) ?? 0
+  }
+  win.addEventListener?.('scroll', onScrollPreload, { passive: true })
+
   function scheduleCompute() {
     if (destroyed) return
     if (recomputeTimer) win.clearTimeout?.(recomputeTimer)
@@ -290,6 +334,9 @@ function boot({ window: win = globalThis.window, storage } = {}) {
 
   compute()
   render()
+  win.setTimeout?.(() => {
+    if (!destroyed) preloadTick()
+  }, 1500)
 
   unsubscribe = adapter.subscribe?.(scheduleCompute) ?? null
 
@@ -297,6 +344,8 @@ function boot({ window: win = globalThis.window, storage } = {}) {
     destroyed = true
     if (recomputeTimer) win.clearTimeout?.(recomputeTimer)
     unsubscribe?.()
+    win.removeEventListener?.('scroll', onScrollPreload)
+    if (preloadRaf) win.cancelAnimationFrame?.(preloadRaf)
     ui?.dispose()
     ui = null
   }
@@ -514,7 +563,8 @@ function createV3(host) {
       const data = litData(element)
       return data ? readFromData(data, element) : readFromDom(element)
     },
-    loadMore: () => triggerMore({ root: host, items: queryDeep(host, THREAD) }),
+    loadMore: (options = {}) =>
+      triggerMore({ root: host, items: queryDeep(host, THREAD), ...options }),
     subscribe(callback) {
       return observeDeep(host, callback)
     },
@@ -621,7 +671,7 @@ function nearestScrollable(element) {
  * 2) 评论列表有独立滚动容器 → 只滚这个容器到底；
  * 3) 都没有 → 只把最后一条评论滚进视野，**绝不**把整页滚到 footer。
  */
-function triggerMore({ root, items }) {
+function triggerMore({ root, items, silent = false }) {
   const buttons = queryDeep(root, 'button, a, div, span').filter(
     (el) => el.children.length === 0 && MORE_TEXT.test((el.textContent ?? '').trim()),
   )
@@ -630,6 +680,7 @@ function triggerMore({ root, items }) {
     button.click()
     return true
   }
+  if (silent) return false
 
   const last = items?.[items.length - 1]
   if (!last) return false
@@ -677,6 +728,15 @@ function isPinned(element) {
     /* 忽略 */
   }
   return false
+}
+
+/** 距离页面底部还有多少像素；用于「快到底就开始加载」 */
+function distanceToBottom({ scrollY = 0, innerHeight = 0, scrollHeight = 0 } = {}) {
+  return Math.max(0, Number(scrollHeight) - Number(scrollY) - Number(innerHeight))
+}
+
+function nearBottom(metrics, threshold = 900) {
+  return distanceToBottom(metrics) <= threshold
 }
 
 const hooks = new Set()
@@ -731,7 +791,7 @@ function observeDeep(root, callback) {
   }
 }
 
-Object.assign(exports, { normalizeUrl, queryDeep, queryDeepOne, fallbackRpid, findTabRow, triggerMore, isPinned, onShadowCreated, observeDeep });
+Object.assign(exports, { normalizeUrl, queryDeep, queryDeepOne, fallbackRpid, findTabRow, triggerMore, isPinned, distanceToBottom, nearBottom, onShadowCreated, observeDeep });
 });
 
 __define("src/adapters/v2.js", function (exports, __require) {
@@ -773,7 +833,7 @@ function createV2(root) {
     getSortRow: () => findTabRow(root),
     readComment,
     isPinned,
-    loadMore: () => triggerMore({ root, items: mainComments(root) }),
+    loadMore: (options = {}) => triggerMore({ root, items: mainComments(root), ...options }),
     subscribe(callback) {
       return observeDeep(root, callback)
     },
@@ -827,7 +887,7 @@ function createV1(root) {
     getSortRow: () => findTabRow(root),
     readComment,
     isPinned,
-    loadMore: () => triggerMore({ root, items: mainComments(root) }),
+    loadMore: (options = {}) => triggerMore({ root, items: mainComments(root), ...options }),
     subscribe(callback) {
       return observeDeep(root, callback)
     },

@@ -1,12 +1,12 @@
 import { detectAdapter, degrade } from './adapters/index.js'
-import { queryDeepOne, queryDeep, onShadowCreated } from './adapters/shadow.js'
+import { queryDeepOne, queryDeep, onShadowCreated, nearBottom } from './adapters/shadow.js'
 import { scanCommentsOnce } from './core/score.js'
 import { createStore, createDb } from './core/store.js'
 import { DEBUG } from './core/debug.js'
 import { applyView, mountControls } from './ui/mount.js'
 
 const VIDEO_URL = /^https?:\/\/www\.bilibili\.com\/video\//
-const VERSION = '1.6.0'
+const VERSION = '1.6.1'
 
 function memoryStorage() {
   const map = new Map()
@@ -95,6 +95,10 @@ export function boot({ window: win = globalThis.window, storage } = {}) {
   let view = 'hot'
   let verdicts = new Map()
   let lastRenderKey = ''
+  let preloadAt = 0
+  let preloadStatic = 0
+  let preloadDisabled = false
+  let preloadRaf = 0
   let botCount = 0
   let destroyed = false
   let recomputeTimer = null
@@ -183,6 +187,46 @@ export function boot({ window: win = globalThis.window, storage } = {}) {
 
   }
 
+  /** 距离底部还有一段就开始加载，避免「必须拉到底」才出评论 */
+  function preloadTick() {
+    if (destroyed || preloadDisabled) return
+    const doc = win.document
+    const metrics = {
+      scrollY: win.scrollY ?? 0,
+      innerHeight: win.innerHeight ?? 0,
+      scrollHeight: doc?.documentElement?.scrollHeight ?? 0,
+    }
+    if (!nearBottom(metrics, 900)) return
+    const now = Date.now()
+    if (now - preloadAt < 1500) return
+    preloadAt = now
+
+    const before = adapter.listComments().length
+    let triggered = false
+    try {
+      // 优先只点「加载更多」按钮，完全不滚动
+      triggered = adapter.loadMore?.({ silent: true }) ?? false
+      if (!triggered) adapter.loadMore?.()
+    } catch (error) {
+      degrade('预加载失败', error)
+    }
+    win.setTimeout?.(() => {
+      if (destroyed) return
+      const grew = adapter.listComments().length > before
+      preloadStatic = grew ? 0 : preloadStatic + 1
+      if (preloadStatic >= 3) preloadDisabled = true
+    }, 1500)
+  }
+
+  const onScrollPreload = () => {
+    if (preloadRaf) return
+    preloadRaf = win.requestAnimationFrame?.(() => {
+      preloadRaf = 0
+      preloadTick()
+    }) ?? 0
+  }
+  win.addEventListener?.('scroll', onScrollPreload, { passive: true })
+
   function scheduleCompute() {
     if (destroyed) return
     if (recomputeTimer) win.clearTimeout?.(recomputeTimer)
@@ -258,6 +302,9 @@ export function boot({ window: win = globalThis.window, storage } = {}) {
 
   compute()
   render()
+  win.setTimeout?.(() => {
+    if (!destroyed) preloadTick()
+  }, 1500)
 
   unsubscribe = adapter.subscribe?.(scheduleCompute) ?? null
 
@@ -265,6 +312,8 @@ export function boot({ window: win = globalThis.window, storage } = {}) {
     destroyed = true
     if (recomputeTimer) win.clearTimeout?.(recomputeTimer)
     unsubscribe?.()
+    win.removeEventListener?.('scroll', onScrollPreload)
+    if (preloadRaf) win.cancelAnimationFrame?.(preloadRaf)
     ui?.dispose()
     ui = null
   }
