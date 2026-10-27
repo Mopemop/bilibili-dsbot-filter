@@ -153,6 +153,18 @@ export function createDb({ gm, storage } = {}) {
   const records = () => Object.values(load()).filter(Boolean)
 
   return {
+    /** 一次读取，供整页判定使用（避免每条评论都 JSON.parse 一遍） */
+    snapshot() {
+      const entries = Object.values(load()).filter(Boolean)
+      const byMid = new Map()
+      const byName = new Map()
+      for (const entry of entries) {
+        if (entry.mid) byMid.set(String(entry.mid), entry.verdict)
+        if (entry.uname) byName.set(String(entry.uname), entry.verdict)
+      }
+      return { byMid, byName }
+    },
+
     /** 按 UID 查名单 */
     accountVerdict(mid) {
       if (!mid) return null

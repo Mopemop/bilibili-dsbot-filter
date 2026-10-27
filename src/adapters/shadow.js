@@ -13,18 +13,21 @@ export function queryDeep(root, selector) {
   const out = []
   const seen = new Set()
   const visit = (node) => {
-    if (!node?.querySelectorAll) return
-    if (node.shadowRoot) visit(node.shadowRoot)
+    if (!node) return
     if (node.nodeType === 1 && node.matches?.(selector) && !seen.has(node)) {
       seen.add(node)
       out.push(node)
     }
-    for (const el of node.querySelectorAll(selector)) {
-      if (seen.has(el)) continue
-      seen.add(el)
-      out.push(el)
+    if (node.shadowRoot) visit(node.shadowRoot)
+    if (!node.querySelectorAll) return
+    // 只遍历一次子树：同时做选择器匹配与 shadow 下钻
+    for (const el of node.querySelectorAll('*')) {
+      if (el.matches?.(selector) && !seen.has(el)) {
+        seen.add(el)
+        out.push(el)
+      }
+      if (el.shadowRoot) visit(el.shadowRoot)
     }
-    for (const el of node.querySelectorAll('*')) if (el.shadowRoot) visit(el.shadowRoot)
   }
   visit(root)
   return out
@@ -126,18 +129,36 @@ export function triggerMore({ root, items, silent = false }) {
 /**
  * 置顶评论识别：B 站各版本都用「置顶」小标签或 top/pinned 相关 class 标记。
  * 只看短文本标签，避免正文里出现「置顶」两个字被误判。
+ * 结果按元素短缓存：命中缓存 30s，未命中 2s（等 B 站把徽标渲染出来）。
  */
+let pinnedCache = new WeakMap()
+
+export function clearPinnedCache() {
+  pinnedCache = new WeakMap()
+}
+
 export function isPinned(element) {
   if (!element?.querySelectorAll) return false
+  const now = Date.now()
+  const cached = pinnedCache.get(element)
+  if (cached && now - cached.at < (cached.value ? 30000 : 2000)) return cached.value
+  const value = detectPinned(element)
+  pinnedCache.set(element, { value, at: now })
+  return value
+}
+
+function detectPinned(element) {
   try {
     if (/pinned/i.test(element.className ?? '')) return true
     const classes = [...(element.classList ?? [])]
     if (classes.some((name) => /^(is-)?top(ped)?$/i.test(name))) return true
     const label = element.getAttribute?.('aria-label') ?? ''
     if (label.includes('置顶')) return true
+    // 先看整块文本里有没有「置顶」，没有就直接返回（省掉 querySelectorAll）
+    if (!(element.textContent ?? '').includes('置顶')) return false
     for (const el of element.querySelectorAll('span, div, i, em, b, p, img[alt]')) {
       const text = (el.textContent ?? '').trim()
-      if (text === '置顶' && text.length <= 2) return true
+      if (text === '置顶') return true
       if ((el.getAttribute?.('alt') ?? '').includes('置顶')) return true
     }
   } catch {

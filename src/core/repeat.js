@@ -27,38 +27,36 @@ function shingles(text) {
   return out
 }
 
-function intersects(a, b) {
-  const [small, big] = a.size <= b.size ? [a, b] : [b, a]
-  for (const gram of small) if (big.has(gram)) return true
-  return false
-}
-
 /**
  * @param {Array<{rpid:string, mid:string, message:string}>} comments
  * @returns {{rpids:string[], sameAuthor:string[]}}
  */
 export function detectDuplicate(comments) {
-  const prepared = (comments ?? []).map((comment) => {
-    const normalized = normalizeMessage(comment.message)
-    return { ...comment, grams: shingles(normalized) }
-  })
-
   const rpids = new Set()
   const sameAuthor = new Set()
+  // shingle → 首次出现的 {mid, rpid}；共享任意 24 字片段即视为重复，
+  // 复杂度从 O(n²) 降到 O(总 shingle 数)。
+  const index = new Map()
 
-  for (let i = 0; i < prepared.length; i += 1) {
-    const a = prepared[i]
-    if (!a.grams.size) continue
-    for (let j = i + 1; j < prepared.length; j += 1) {
-      const b = prepared[j]
-      if (!b.grams.size) continue
-      if (!intersects(a.grams, b.grams)) continue
-      if (a.mid && a.mid === b.mid) {
-        sameAuthor.add(a.rpid)
-        sameAuthor.add(b.rpid)
+  for (const comment of comments ?? []) {
+    const grams = shingles(normalizeMessage(comment.message))
+    if (!grams.size) continue
+    const local = new Set()
+    for (const gram of grams) {
+      if (local.has(gram)) continue
+      local.add(gram)
+      const hit = index.get(gram)
+      if (!hit) {
+        index.set(gram, { mid: comment.mid, rpid: comment.rpid })
+        continue
+      }
+      if (hit.rpid === comment.rpid) continue
+      if (hit.mid && hit.mid === comment.mid) {
+        sameAuthor.add(hit.rpid)
+        sameAuthor.add(comment.rpid)
       } else {
-        rpids.add(a.rpid)
-        rpids.add(b.rpid)
+        rpids.add(hit.rpid)
+        rpids.add(comment.rpid)
       }
     }
   }

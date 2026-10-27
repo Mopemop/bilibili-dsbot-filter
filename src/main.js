@@ -6,7 +6,7 @@ import { DEBUG } from './core/debug.js'
 import { applyView, mountControls } from './ui/mount.js'
 
 const VIDEO_URL = /^https?:\/\/www\.bilibili\.com\/video\//
-const VERSION = '1.6.2'
+const VERSION = '1.7.0'
 
 function memoryStorage() {
   const map = new Map()
@@ -118,9 +118,25 @@ export function boot({ window: win = globalThis.window, storage } = {}) {
     return signal
   }
 
+  /** 渲染路径用的快速读法：直接用上一次 compute 的结果，不重复做 DOM 解析 */
+  function readSignalFast(element) {
+    return signalCache.get(element)?.signal ?? readSignal(element)
+  }
+
+  // 评论列表按需缓存：只在 DOM 变动后重算，避免每个 scroll 帧都做跨 shadow 遍历
+  let commentsCache = null
+  function listComments() {
+    if (!commentsCache) commentsCache = adapter.listComments()
+    return commentsCache
+  }
+  function invalidateComments() {
+    commentsCache = null
+  }
+
   function compute() {
     if (destroyed) return
-    const elements = adapter.listComments()
+    invalidateComments()
+    const elements = listComments()
     const signals = elements.map(readSignal)
     const words = store.words()
     const { scores } = scanCommentsOnce(signals, {
@@ -172,6 +188,7 @@ export function boot({ window: win = globalThis.window, storage } = {}) {
       adapter,
       verdicts: visibleVerdicts(),
       view: settings.enabled ? view : 'off',
+      readId: (element) => readSignalFast(element).rpid,
     })
 
     restoreAnchor(anchor)
@@ -181,7 +198,7 @@ export function boot({ window: win = globalThis.window, storage } = {}) {
     report({
       view,
       botCount,
-      comments: adapter.listComments().length,
+      comments: listComments().length,
       hasSlot: Boolean(document.querySelector('#bdf-slot')),
     })
 
@@ -190,18 +207,17 @@ export function boot({ window: win = globalThis.window, storage } = {}) {
   /** 距离底部还有一段就开始加载，避免「必须拉到底」才出评论 */
   function preloadTick() {
     if (destroyed || preloadDisabled) return
+    const now = Date.now()
+    if (now - preloadAt < 1500) return
     // 只按「评论区最后一条」判断，滑到一半不会误触发
-    const items = adapter.listComments()
+    const items = listComments()
     const last = items[items.length - 1]
     const rect = last?.getBoundingClientRect?.()
     // 提前约 1.5 屏（大约滑到评论区一半）就开始加载
     const viewH = win.innerHeight ?? 800
     if (!nearListEnd(rect, viewH, Math.round(viewH * 1.5))) return
-    const now = Date.now()
-    if (now - preloadAt < 1500) return
     preloadAt = now
-
-    const before = adapter.listComments().length
+    const before = items.length
     let triggered = false
     try {
       // 优先只点「加载更多」按钮，完全不滚动
@@ -212,7 +228,8 @@ export function boot({ window: win = globalThis.window, storage } = {}) {
     }
     win.setTimeout?.(() => {
       if (destroyed) return
-      const grew = adapter.listComments().length > before
+      invalidateComments()
+      const grew = listComments().length > before
       preloadStatic = grew ? 0 : preloadStatic + 1
       if (preloadStatic >= 3) preloadDisabled = true
     }, 1500)
@@ -234,7 +251,7 @@ export function boot({ window: win = globalThis.window, storage } = {}) {
       recomputeTimer = null
       compute()
       render()
-    }, 120)
+    }, 200)
   }
 
   ui = mountControls({
@@ -306,7 +323,10 @@ export function boot({ window: win = globalThis.window, storage } = {}) {
     if (!destroyed) preloadTick()
   }, 1500)
 
-  unsubscribe = adapter.subscribe?.(scheduleCompute) ?? null
+  unsubscribe = adapter.subscribe?.(() => {
+    invalidateComments()
+    scheduleCompute()
+  }) ?? null
 
   function destroy() {
     destroyed = true

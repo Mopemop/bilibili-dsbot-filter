@@ -2,7 +2,7 @@
 // @name         B站大肥鱼过滤器（DeepSeek 机器人）
 // @name:en      Bilibili DeepSeek Bot Comment Filter
 // @name:zh-CN   B站大肥鱼过滤器（DeepSeek 机器人）
-// @version      1.6.2
+// @version      1.7.0
 // @description  在 B 站视频评论区识别 DeepSeek「大肥鱼」机器人的主评论：最新/最热里隐藏，新增「大肥鱼」视图只展示它们及其楼中楼。
 // @description:en  Filter DeepSeek bot comments on Bilibili video pages: hide them in "Hot/Latest", add a "Big Fat Fish" tab that only shows the detected bot comments.
 // @description:zh-CN  在 B 站视频评论区识别 DeepSeek「大肥鱼」机器人的主评论：最新/最热里隐藏，新增「大肥鱼」视图只展示它们及其楼中楼。
@@ -40,7 +40,7 @@ const { createStore, createDb } = __require("src/core/store.js");
 const { DEBUG } = __require("src/core/debug.js");
 const { applyView, mountControls } = __require("src/ui/mount.js");
 const VIDEO_URL = /^https?:\/\/www\.bilibili\.com\/video\//
-const VERSION = '1.6.2'
+const VERSION = '1.7.0'
 
 function memoryStorage() {
   const map = new Map()
@@ -152,9 +152,25 @@ function boot({ window: win = globalThis.window, storage } = {}) {
     return signal
   }
 
+  /** 渲染路径用的快速读法：直接用上一次 compute 的结果，不重复做 DOM 解析 */
+  function readSignalFast(element) {
+    return signalCache.get(element)?.signal ?? readSignal(element)
+  }
+
+  // 评论列表按需缓存：只在 DOM 变动后重算，避免每个 scroll 帧都做跨 shadow 遍历
+  let commentsCache = null
+  function listComments() {
+    if (!commentsCache) commentsCache = adapter.listComments()
+    return commentsCache
+  }
+  function invalidateComments() {
+    commentsCache = null
+  }
+
   function compute() {
     if (destroyed) return
-    const elements = adapter.listComments()
+    invalidateComments()
+    const elements = listComments()
     const signals = elements.map(readSignal)
     const words = store.words()
     const { scores } = scanCommentsOnce(signals, {
@@ -206,6 +222,7 @@ function boot({ window: win = globalThis.window, storage } = {}) {
       adapter,
       verdicts: visibleVerdicts(),
       view: settings.enabled ? view : 'off',
+      readId: (element) => readSignalFast(element).rpid,
     })
 
     restoreAnchor(anchor)
@@ -215,7 +232,7 @@ function boot({ window: win = globalThis.window, storage } = {}) {
     report({
       view,
       botCount,
-      comments: adapter.listComments().length,
+      comments: listComments().length,
       hasSlot: Boolean(document.querySelector('#bdf-slot')),
     })
 
@@ -224,18 +241,17 @@ function boot({ window: win = globalThis.window, storage } = {}) {
   /** 距离底部还有一段就开始加载，避免「必须拉到底」才出评论 */
   function preloadTick() {
     if (destroyed || preloadDisabled) return
+    const now = Date.now()
+    if (now - preloadAt < 1500) return
     // 只按「评论区最后一条」判断，滑到一半不会误触发
-    const items = adapter.listComments()
+    const items = listComments()
     const last = items[items.length - 1]
     const rect = last?.getBoundingClientRect?.()
     // 提前约 1.5 屏（大约滑到评论区一半）就开始加载
     const viewH = win.innerHeight ?? 800
     if (!nearListEnd(rect, viewH, Math.round(viewH * 1.5))) return
-    const now = Date.now()
-    if (now - preloadAt < 1500) return
     preloadAt = now
-
-    const before = adapter.listComments().length
+    const before = items.length
     let triggered = false
     try {
       // 优先只点「加载更多」按钮，完全不滚动
@@ -246,7 +262,8 @@ function boot({ window: win = globalThis.window, storage } = {}) {
     }
     win.setTimeout?.(() => {
       if (destroyed) return
-      const grew = adapter.listComments().length > before
+      invalidateComments()
+      const grew = listComments().length > before
       preloadStatic = grew ? 0 : preloadStatic + 1
       if (preloadStatic >= 3) preloadDisabled = true
     }, 1500)
@@ -268,7 +285,7 @@ function boot({ window: win = globalThis.window, storage } = {}) {
       recomputeTimer = null
       compute()
       render()
-    }, 120)
+    }, 200)
   }
 
   ui = mountControls({
@@ -340,7 +357,10 @@ function boot({ window: win = globalThis.window, storage } = {}) {
     if (!destroyed) preloadTick()
   }, 1500)
 
-  unsubscribe = adapter.subscribe?.(scheduleCompute) ?? null
+  unsubscribe = adapter.subscribe?.(() => {
+    invalidateComments()
+    scheduleCompute()
+  }) ?? null
 
   function destroy() {
     destroyed = true
@@ -605,18 +625,21 @@ function queryDeep(root, selector) {
   const out = []
   const seen = new Set()
   const visit = (node) => {
-    if (!node?.querySelectorAll) return
-    if (node.shadowRoot) visit(node.shadowRoot)
+    if (!node) return
     if (node.nodeType === 1 && node.matches?.(selector) && !seen.has(node)) {
       seen.add(node)
       out.push(node)
     }
-    for (const el of node.querySelectorAll(selector)) {
-      if (seen.has(el)) continue
-      seen.add(el)
-      out.push(el)
+    if (node.shadowRoot) visit(node.shadowRoot)
+    if (!node.querySelectorAll) return
+    // 只遍历一次子树：同时做选择器匹配与 shadow 下钻
+    for (const el of node.querySelectorAll('*')) {
+      if (el.matches?.(selector) && !seen.has(el)) {
+        seen.add(el)
+        out.push(el)
+      }
+      if (el.shadowRoot) visit(el.shadowRoot)
     }
-    for (const el of node.querySelectorAll('*')) if (el.shadowRoot) visit(el.shadowRoot)
   }
   visit(root)
   return out
@@ -718,18 +741,36 @@ function triggerMore({ root, items, silent = false }) {
 /**
  * 置顶评论识别：B 站各版本都用「置顶」小标签或 top/pinned 相关 class 标记。
  * 只看短文本标签，避免正文里出现「置顶」两个字被误判。
+ * 结果按元素短缓存：命中缓存 30s，未命中 2s（等 B 站把徽标渲染出来）。
  */
+let pinnedCache = new WeakMap()
+
+function clearPinnedCache() {
+  pinnedCache = new WeakMap()
+}
+
 function isPinned(element) {
   if (!element?.querySelectorAll) return false
+  const now = Date.now()
+  const cached = pinnedCache.get(element)
+  if (cached && now - cached.at < (cached.value ? 30000 : 2000)) return cached.value
+  const value = detectPinned(element)
+  pinnedCache.set(element, { value, at: now })
+  return value
+}
+
+function detectPinned(element) {
   try {
     if (/pinned/i.test(element.className ?? '')) return true
     const classes = [...(element.classList ?? [])]
     if (classes.some((name) => /^(is-)?top(ped)?$/i.test(name))) return true
     const label = element.getAttribute?.('aria-label') ?? ''
     if (label.includes('置顶')) return true
+    // 先看整块文本里有没有「置顶」，没有就直接返回（省掉 querySelectorAll）
+    if (!(element.textContent ?? '').includes('置顶')) return false
     for (const el of element.querySelectorAll('span, div, i, em, b, p, img[alt]')) {
       const text = (el.textContent ?? '').trim()
-      if (text === '置顶' && text.length <= 2) return true
+      if (text === '置顶') return true
       if ((el.getAttribute?.('alt') ?? '').includes('置顶')) return true
     }
   } catch {
@@ -811,7 +852,7 @@ function observeDeep(root, callback) {
   }
 }
 
-Object.assign(exports, { normalizeUrl, queryDeep, queryDeepOne, fallbackRpid, findTabRow, triggerMore, isPinned, distanceToBottom, nearBottom, nearListEnd, onShadowCreated, observeDeep });
+Object.assign(exports, { normalizeUrl, queryDeep, queryDeepOne, fallbackRpid, findTabRow, triggerMore, clearPinnedCache, isPinned, distanceToBottom, nearBottom, nearListEnd, onShadowCreated, observeDeep });
 });
 
 __define("src/adapters/v2.js", function (exports, __require) {
@@ -1153,38 +1194,36 @@ function shingles(text) {
   return out
 }
 
-function intersects(a, b) {
-  const [small, big] = a.size <= b.size ? [a, b] : [b, a]
-  for (const gram of small) if (big.has(gram)) return true
-  return false
-}
-
 /**
  * @param {Array<{rpid:string, mid:string, message:string}>} comments
  * @returns {{rpids:string[], sameAuthor:string[]}}
  */
 function detectDuplicate(comments) {
-  const prepared = (comments ?? []).map((comment) => {
-    const normalized = normalizeMessage(comment.message)
-    return { ...comment, grams: shingles(normalized) }
-  })
-
   const rpids = new Set()
   const sameAuthor = new Set()
+  // shingle → 首次出现的 {mid, rpid}；共享任意 24 字片段即视为重复，
+  // 复杂度从 O(n²) 降到 O(总 shingle 数)。
+  const index = new Map()
 
-  for (let i = 0; i < prepared.length; i += 1) {
-    const a = prepared[i]
-    if (!a.grams.size) continue
-    for (let j = i + 1; j < prepared.length; j += 1) {
-      const b = prepared[j]
-      if (!b.grams.size) continue
-      if (!intersects(a.grams, b.grams)) continue
-      if (a.mid && a.mid === b.mid) {
-        sameAuthor.add(a.rpid)
-        sameAuthor.add(b.rpid)
+  for (const comment of comments ?? []) {
+    const grams = shingles(normalizeMessage(comment.message))
+    if (!grams.size) continue
+    const local = new Set()
+    for (const gram of grams) {
+      if (local.has(gram)) continue
+      local.add(gram)
+      const hit = index.get(gram)
+      if (!hit) {
+        index.set(gram, { mid: comment.mid, rpid: comment.rpid })
+        continue
+      }
+      if (hit.rpid === comment.rpid) continue
+      if (hit.mid && hit.mid === comment.mid) {
+        sameAuthor.add(hit.rpid)
+        sameAuthor.add(comment.rpid)
       } else {
-        rpids.add(a.rpid)
-        rpids.add(b.rpid)
+        rpids.add(hit.rpid)
+        rpids.add(comment.rpid)
       }
     }
   }
@@ -1352,6 +1391,18 @@ function createDb({ gm, storage } = {}) {
   const records = () => Object.values(load()).filter(Boolean)
 
   return {
+    /** 一次读取，供整页判定使用（避免每条评论都 JSON.parse 一遍） */
+    snapshot() {
+      const entries = Object.values(load()).filter(Boolean)
+      const byMid = new Map()
+      const byName = new Map()
+      for (const entry of entries) {
+        if (entry.mid) byMid.set(String(entry.mid), entry.verdict)
+        if (entry.uname) byName.set(String(entry.uname), entry.verdict)
+      }
+      return { byMid, byName }
+    },
+
     /** 按 UID 查名单 */
     accountVerdict(mid) {
       if (!mid) return null
@@ -1493,7 +1544,8 @@ function showElement(element) {
  * 落判定结果。view='fish' 时只留机器人主评论（楼中楼在原节点里，天然保留）。
  * @param {{adapter:object, verdicts?:Map<string,boolean>, view?:'hot'|'new'|'fish'|'off'}} args
  */
-function applyView({ adapter, verdicts = new Map(), view = 'hot' }) {
+function applyView({ adapter, verdicts = new Map(), view = 'hot', readId }) {
+  const getRpid = readId ?? ((element) => adapter.readComment(element).rpid)
   const root = adapter?.root
   if (!root) return
   if (view === 'off') root.removeAttribute('data-bdf-view')
@@ -1516,9 +1568,10 @@ function applyView({ adapter, verdicts = new Map(), view = 'hot' }) {
       showElement(element)
       continue
     }
-    const { rpid } = adapter.readComment(element)
+    const rpid = getRpid(element)
     const isBot = Boolean(verdicts.get(rpid))
-    element.setAttribute('data-bdf-bot', isBot ? '1' : '0')
+    const flag = isBot ? '1' : '0'
+    if (element.getAttribute('data-bdf-bot') !== flag) element.setAttribute('data-bdf-bot', flag)
     const shouldHide = view === 'fish' ? !isBot : isBot
     if (shouldHide) hideElement(element)
     else showElement(element)

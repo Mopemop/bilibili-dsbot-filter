@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { JSDOM } from 'jsdom'
 import { detectAdapter } from '../src/adapters/index.js'
-import { findTabRow, nearBottom, distanceToBottom, nearListEnd } from '../src/adapters/shadow.js'
+import { findTabRow, nearBottom, distanceToBottom, nearListEnd, clearPinnedCache } from '../src/adapters/shadow.js'
 
 function fixtureHtml(name) {
   return readFileSync(new URL(`./fixtures/${name}.html`, import.meta.url), 'utf8')
@@ -197,6 +197,7 @@ test('isPinned：识别「置顶」标签，忽略正文里的置顶二字', () 
   const tag = document.createElement('span')
   tag.textContent = '置顶'
   first.prepend(tag)
+  clearPinnedCache()
   assert.equal(adapter.isPinned(first), true)
 })
 

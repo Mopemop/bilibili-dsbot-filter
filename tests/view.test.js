@@ -5,6 +5,7 @@ import { JSDOM } from 'jsdom'
 import { detectAdapter } from '../src/adapters/index.js'
 import { mountControls, applyView } from '../src/ui/mount.js'
 import { boot, start } from '../src/main.js'
+import { clearPinnedCache } from '../src/adapters/shadow.js'
 
 function mount(name) {
   const html = readFileSync(new URL(`./fixtures/${name}.html`, import.meta.url), 'utf8')
@@ -307,6 +308,7 @@ test('置顶评论：最热和大肥鱼里都始终显示', () => {
     const tag = document.createElement('span')
     tag.textContent = '置顶'
     comments[1].prepend(tag)
+    clearPinnedCache()
     controller.compute()
     controller.render()
 

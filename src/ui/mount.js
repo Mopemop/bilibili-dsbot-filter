@@ -66,7 +66,8 @@ function showElement(element) {
  * 落判定结果。view='fish' 时只留机器人主评论（楼中楼在原节点里，天然保留）。
  * @param {{adapter:object, verdicts?:Map<string,boolean>, view?:'hot'|'new'|'fish'|'off'}} args
  */
-export function applyView({ adapter, verdicts = new Map(), view = 'hot' }) {
+export function applyView({ adapter, verdicts = new Map(), view = 'hot', readId }) {
+  const getRpid = readId ?? ((element) => adapter.readComment(element).rpid)
   const root = adapter?.root
   if (!root) return
   if (view === 'off') root.removeAttribute('data-bdf-view')
@@ -89,9 +90,10 @@ export function applyView({ adapter, verdicts = new Map(), view = 'hot' }) {
       showElement(element)
       continue
     }
-    const { rpid } = adapter.readComment(element)
+    const rpid = getRpid(element)
     const isBot = Boolean(verdicts.get(rpid))
-    element.setAttribute('data-bdf-bot', isBot ? '1' : '0')
+    const flag = isBot ? '1' : '0'
+    if (element.getAttribute('data-bdf-bot') !== flag) element.setAttribute('data-bdf-bot', flag)
     const shouldHide = view === 'fish' ? !isBot : isBot
     if (shouldHide) hideElement(element)
     else showElement(element)
