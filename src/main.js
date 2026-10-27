@@ -1,12 +1,13 @@
 import { detectAdapter, degrade } from './adapters/index.js'
 import { queryDeepOne, queryDeep, onShadowCreated, nearListEnd } from './adapters/shadow.js'
-import { scanCommentsOnce } from './core/score.js'
+import { scanCommentsOnce, classifyComment } from './core/score.js'
+import { detectDuplicate } from './core/repeat.js'
 import { createStore, createDb } from './core/store.js'
 import { DEBUG } from './core/debug.js'
 import { applyView, mountControls } from './ui/mount.js'
 
 const VIDEO_URL = /^https?:\/\/www\.bilibili\.com\/video\//
-const VERSION = '1.7.0'
+const VERSION = '1.8.0'
 
 function memoryStorage() {
   const map = new Map()
@@ -177,6 +178,122 @@ export function boot({ window: win = globalThis.window, storage } = {}) {
     if (Math.abs(delta) > 8) win.scrollBy?.(0, delta)
   }
 
+  // ---- 渐进式审核：先显示，再分批判定，命中即移除 ----
+  const BATCH = 40
+  let knownElements = new WeakSet()
+  let pending = []
+  let pumping = false
+  let dupTimer = null
+  let settleResolvers = []
+  let listsCache = null
+
+  function settled() {
+    return new Promise((resolve) => {
+      if (!pending.length && !pumping) resolve()
+      else settleResolvers.push(resolve)
+    })
+  }
+
+  function resolveSettled() {
+    const list = settleResolvers
+    settleResolvers = []
+    for (const resolve of list) resolve()
+  }
+
+  function nextTask(fn) {
+    if (win.requestIdleCallback) win.requestIdleCallback(fn, { timeout: 300 })
+    else win.setTimeout(() => fn(null), 16)
+  }
+
+  function verdictOne(element) {
+    const signal = readSignal(element)
+    listsCache = listsCache ?? db.snapshot()
+    const base = classifyComment(signal, {
+      preset: settings.preset,
+      labels: store.labelMap(),
+      words: store.words(),
+    })
+    let isBot = base.isBot
+    const human =
+      listsCache.byMid.get(String(signal.mid)) === 'human' ||
+      listsCache.byName.get(signal.uname) === 'human'
+    const bot =
+      listsCache.byMid.get(String(signal.mid)) === 'bot' ||
+      listsCache.byName.get(signal.uname) === 'bot'
+    if (human) isBot = false
+    else if (bot) isBot = true
+    if (adapter.isPinned?.(element)) isBot = false
+    verdicts.set(signal.rpid, isBot)
+  }
+
+  function recount() {
+    let count = 0
+    for (const value of verdicts.values()) if (value) count += 1
+    botCount = count
+  }
+
+  /** 跨账号复读是页级信号，最后统一补一次 */
+  function finishPageSignals() {
+    if (dupTimer) win.clearTimeout?.(dupTimer)
+    dupTimer = win.setTimeout?.(() => {
+      dupTimer = null
+      if (destroyed) {
+        resolveSettled()
+        return
+      }
+      const signals = listComments().map(readSignal)
+      const dup = detectDuplicate(signals)
+      if (dup.rpids.length) {
+        for (const rpid of dup.rpids) verdicts.set(rpid, true)
+        recount()
+        render()
+      }
+      resolveSettled()
+    }, 300)
+  }
+
+  function pump() {
+    if (pumping || destroyed) return
+    pumping = true
+    const run = (deadline) => {
+      let processed = 0
+      while (pending.length && processed < BATCH) {
+        if (deadline?.timeRemaining && deadline.timeRemaining() < 3 && processed >= 10) break
+        verdictOne(pending.shift())
+        processed += 1
+      }
+      if (processed) {
+        recount()
+        render()
+      }
+      if (pending.length) {
+        nextTask(run)
+        return
+      }
+      pumping = false
+      finishPageSignals()
+    }
+    nextTask(run)
+  }
+
+  function queueAll() {
+    listsCache = null
+    knownElements = new WeakSet()
+    verdicts = new Map()
+    pending = listComments().slice()
+    pump()
+  }
+
+  function queueNew() {
+    listsCache = null
+    for (const element of listComments()) {
+      if (knownElements.has(element)) continue
+      knownElements.add(element)
+      pending.push(element)
+    }
+    if (pending.length) pump()
+  }
+
   function render() {
     if (destroyed) return
     // 只有切换视图/开关时才做视口锚定；否则每次 B 站追加评论都会把用户拽回去
@@ -249,9 +366,8 @@ export function boot({ window: win = globalThis.window, storage } = {}) {
     if (recomputeTimer) win.clearTimeout?.(recomputeTimer)
     recomputeTimer = win.setTimeout?.(() => {
       recomputeTimer = null
-      compute()
-      render()
-    }, 200)
+      queueNew()
+    }, 150)
   }
 
   ui = mountControls({
@@ -269,7 +385,7 @@ export function boot({ window: win = globalThis.window, storage } = {}) {
     },
     onPresetChange(preset) {
       settings = store.saveSettings({ preset })
-      compute()
+      queueAll()
       render()
     },
     onAddName(name, verdict) {
@@ -279,17 +395,17 @@ export function boot({ window: win = globalThis.window, storage } = {}) {
       const mid = signal?.mid ?? ''
       if (mid) store.setLabel(mid, verdict)
       db.addName(value, verdict, mid)
-      compute()
+      queueAll()
       render()
     },
     onAddWord(word) {
       store.addWord(word)
-      compute()
+      queueAll()
       render()
     },
     onRemoveWord(word) {
       store.removeWord(word)
-      compute()
+      queueAll()
       render()
     },
     getWords() {
@@ -299,7 +415,7 @@ export function boot({ window: win = globalThis.window, storage } = {}) {
       const record = [...db.list('human'), ...db.list('bot')].find((item) => item.key === key)
       if (record?.mid) store.removeLabel(record.mid)
       db.removeAccount(key)
-      compute()
+      queueAll()
       render()
     },
     getLists() {
@@ -317,7 +433,7 @@ export function boot({ window: win = globalThis.window, storage } = {}) {
     }
   }
 
-  compute()
+  queueAll()
   render()
   win.setTimeout?.(() => {
     if (!destroyed) preloadTick()
@@ -342,6 +458,7 @@ export function boot({ window: win = globalThis.window, storage } = {}) {
     adapter,
     compute,
     render,
+    settled,
     destroy,
     get view() {
       return view

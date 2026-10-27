@@ -113,6 +113,7 @@ test('面板总开关能触发回调', () => {
     onToggle: (enabled) => toggles.push(enabled),
     settings: { enabled: true, preset: 'standard' },
   })
+  document.querySelector('#bdf-slot').shadowRoot.querySelector('.bdf-gear').click()
   const panel = document.querySelector('#bdf-panel')
   assert.ok(panel)
   const checkbox = panel.shadowRoot.querySelector('.bdf-enabled')
@@ -145,10 +146,11 @@ function memoryStorage(initial = {}) {
   }
 }
 
-test('boot：自动判定并隐藏机器人主评论', () => {
+test('boot：自动判定并隐藏机器人主评论', async () => {
   const { dom, document } = mount('v2')
   const controller = boot({ window: dom.window, storage: memoryStorage() })
   assert.ok(controller)
+  await controller.settled()
   const comments = controller.adapter.listComments()
   assert.equal(comments[0].getAttribute('data-bdf-bot'), '1')
   assert.equal(comments[0].style.display, 'none')
@@ -240,10 +242,11 @@ test('面板名单：输入用户名全称可加入白名单/黑名单', () => {
   ])
 })
 
-test('boot：把机器人作者加入白名单后评论立刻恢复显示', () => {
+test('boot：把机器人作者加入白名单后评论立刻恢复显示', async () => {
   const { dom } = mount('v2')
   const controller = boot({ window: dom.window, storage: memoryStorage() })
   try {
+    await controller.settled()
     const document = dom.window.document
     const comments = controller.adapter.listComments()
     assert.equal(comments[0].style.display, 'none')
@@ -253,6 +256,7 @@ test('boot：把机器人作者加入白名单后评论立刻恢复显示', () =
     const input = panel.shadowRoot.querySelector('.bdf-name-input')
     input.value = '鲸鱼娘0705'
     panel.shadowRoot.querySelector('.bdf-add-white').click()
+    await controller.settled()
 
     assert.notEqual(comments[0].style.display, 'none')
     const names = [...panel.shadowRoot.querySelectorAll('.bdf-item-name')].map((el) => el.textContent)

@@ -2,7 +2,7 @@
 // @name         B站大肥鱼过滤器（DeepSeek 机器人）
 // @name:en      Bilibili DeepSeek Bot Comment Filter
 // @name:zh-CN   B站大肥鱼过滤器（DeepSeek 机器人）
-// @version      1.7.0
+// @version      1.8.0
 // @description  在 B 站视频评论区识别 DeepSeek「大肥鱼」机器人的主评论：最新/最热里隐藏，新增「大肥鱼」视图只展示它们及其楼中楼。
 // @description:en  Filter DeepSeek bot comments on Bilibili video pages: hide them in "Hot/Latest", add a "Big Fat Fish" tab that only shows the detected bot comments.
 // @description:zh-CN  在 B 站视频评论区识别 DeepSeek「大肥鱼」机器人的主评论：最新/最热里隐藏，新增「大肥鱼」视图只展示它们及其楼中楼。
@@ -35,12 +35,13 @@ function __require(id) {
 __define("src/main.js", function (exports, __require) {
 const { detectAdapter, degrade } = __require("src/adapters/index.js");
 const { queryDeepOne, queryDeep, onShadowCreated, nearListEnd } = __require("src/adapters/shadow.js");
-const { scanCommentsOnce } = __require("src/core/score.js");
+const { scanCommentsOnce, classifyComment } = __require("src/core/score.js");
+const { detectDuplicate } = __require("src/core/repeat.js");
 const { createStore, createDb } = __require("src/core/store.js");
 const { DEBUG } = __require("src/core/debug.js");
 const { applyView, mountControls } = __require("src/ui/mount.js");
 const VIDEO_URL = /^https?:\/\/www\.bilibili\.com\/video\//
-const VERSION = '1.7.0'
+const VERSION = '1.8.0'
 
 function memoryStorage() {
   const map = new Map()
@@ -211,6 +212,122 @@ function boot({ window: win = globalThis.window, storage } = {}) {
     if (Math.abs(delta) > 8) win.scrollBy?.(0, delta)
   }
 
+  // ---- 渐进式审核：先显示，再分批判定，命中即移除 ----
+  const BATCH = 40
+  let knownElements = new WeakSet()
+  let pending = []
+  let pumping = false
+  let dupTimer = null
+  let settleResolvers = []
+  let listsCache = null
+
+  function settled() {
+    return new Promise((resolve) => {
+      if (!pending.length && !pumping) resolve()
+      else settleResolvers.push(resolve)
+    })
+  }
+
+  function resolveSettled() {
+    const list = settleResolvers
+    settleResolvers = []
+    for (const resolve of list) resolve()
+  }
+
+  function nextTask(fn) {
+    if (win.requestIdleCallback) win.requestIdleCallback(fn, { timeout: 300 })
+    else win.setTimeout(() => fn(null), 16)
+  }
+
+  function verdictOne(element) {
+    const signal = readSignal(element)
+    listsCache = listsCache ?? db.snapshot()
+    const base = classifyComment(signal, {
+      preset: settings.preset,
+      labels: store.labelMap(),
+      words: store.words(),
+    })
+    let isBot = base.isBot
+    const human =
+      listsCache.byMid.get(String(signal.mid)) === 'human' ||
+      listsCache.byName.get(signal.uname) === 'human'
+    const bot =
+      listsCache.byMid.get(String(signal.mid)) === 'bot' ||
+      listsCache.byName.get(signal.uname) === 'bot'
+    if (human) isBot = false
+    else if (bot) isBot = true
+    if (adapter.isPinned?.(element)) isBot = false
+    verdicts.set(signal.rpid, isBot)
+  }
+
+  function recount() {
+    let count = 0
+    for (const value of verdicts.values()) if (value) count += 1
+    botCount = count
+  }
+
+  /** 跨账号复读是页级信号，最后统一补一次 */
+  function finishPageSignals() {
+    if (dupTimer) win.clearTimeout?.(dupTimer)
+    dupTimer = win.setTimeout?.(() => {
+      dupTimer = null
+      if (destroyed) {
+        resolveSettled()
+        return
+      }
+      const signals = listComments().map(readSignal)
+      const dup = detectDuplicate(signals)
+      if (dup.rpids.length) {
+        for (const rpid of dup.rpids) verdicts.set(rpid, true)
+        recount()
+        render()
+      }
+      resolveSettled()
+    }, 300)
+  }
+
+  function pump() {
+    if (pumping || destroyed) return
+    pumping = true
+    const run = (deadline) => {
+      let processed = 0
+      while (pending.length && processed < BATCH) {
+        if (deadline?.timeRemaining && deadline.timeRemaining() < 3 && processed >= 10) break
+        verdictOne(pending.shift())
+        processed += 1
+      }
+      if (processed) {
+        recount()
+        render()
+      }
+      if (pending.length) {
+        nextTask(run)
+        return
+      }
+      pumping = false
+      finishPageSignals()
+    }
+    nextTask(run)
+  }
+
+  function queueAll() {
+    listsCache = null
+    knownElements = new WeakSet()
+    verdicts = new Map()
+    pending = listComments().slice()
+    pump()
+  }
+
+  function queueNew() {
+    listsCache = null
+    for (const element of listComments()) {
+      if (knownElements.has(element)) continue
+      knownElements.add(element)
+      pending.push(element)
+    }
+    if (pending.length) pump()
+  }
+
   function render() {
     if (destroyed) return
     // 只有切换视图/开关时才做视口锚定；否则每次 B 站追加评论都会把用户拽回去
@@ -283,9 +400,8 @@ function boot({ window: win = globalThis.window, storage } = {}) {
     if (recomputeTimer) win.clearTimeout?.(recomputeTimer)
     recomputeTimer = win.setTimeout?.(() => {
       recomputeTimer = null
-      compute()
-      render()
-    }, 200)
+      queueNew()
+    }, 150)
   }
 
   ui = mountControls({
@@ -303,7 +419,7 @@ function boot({ window: win = globalThis.window, storage } = {}) {
     },
     onPresetChange(preset) {
       settings = store.saveSettings({ preset })
-      compute()
+      queueAll()
       render()
     },
     onAddName(name, verdict) {
@@ -313,17 +429,17 @@ function boot({ window: win = globalThis.window, storage } = {}) {
       const mid = signal?.mid ?? ''
       if (mid) store.setLabel(mid, verdict)
       db.addName(value, verdict, mid)
-      compute()
+      queueAll()
       render()
     },
     onAddWord(word) {
       store.addWord(word)
-      compute()
+      queueAll()
       render()
     },
     onRemoveWord(word) {
       store.removeWord(word)
-      compute()
+      queueAll()
       render()
     },
     getWords() {
@@ -333,7 +449,7 @@ function boot({ window: win = globalThis.window, storage } = {}) {
       const record = [...db.list('human'), ...db.list('bot')].find((item) => item.key === key)
       if (record?.mid) store.removeLabel(record.mid)
       db.removeAccount(key)
-      compute()
+      queueAll()
       render()
     },
     getLists() {
@@ -351,7 +467,7 @@ function boot({ window: win = globalThis.window, storage } = {}) {
     }
   }
 
-  compute()
+  queueAll()
   render()
   win.setTimeout?.(() => {
     if (!destroyed) preloadTick()
@@ -376,6 +492,7 @@ function boot({ window: win = globalThis.window, storage } = {}) {
     adapter,
     compute,
     render,
+    settled,
     destroy,
     get view() {
       return view
@@ -1493,6 +1610,10 @@ const STYLE = `
   .bdf-tab.is-active { font-weight: 600; }
   .bdf-count { font-size: 11px; background: #00aeec; color: #fff; border-radius: 8px; padding: 0 4px; min-width: 12px; text-align: center; }
   .bdf-gear { font: inherit; font-size: 12px; color: #9499a0; background: none; border: 0; cursor: pointer; padding: 0 2px; }
+`
+
+const STYLE_PANEL = `
+  .bdf-panel[hidden] { display: none; }
   .bdf-card { background: #fff; color: #18191c; border-radius: 8px; padding: 12px; box-shadow: 0 4px 20px rgba(0,0,0,.18); font-size: 13px; width: 260px; font-family: system-ui, -apple-system, "Microsoft YaHei", sans-serif; }
   .bdf-card-title { font-weight: 600; margin-bottom: 8px; }
   .bdf-row { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
@@ -1502,7 +1623,6 @@ const STYLE = `
   .bdf-list-title { color: #9499a0; font-size: 11px; margin-bottom: 4px; }
   .bdf-item { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
   .bdf-item-name { color: #18191c; max-width: 92px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .bdf-item-text { color: #9499a0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bdf-label { font: inherit; font-size: 11px; padding: 1px 6px; border-radius: 4px; border: 1px solid #e3e5e7; background: #f6f7f8; cursor: pointer; white-space: nowrap; }
   .bdf-label:hover { border-color: #00aeec; color: #00aeec; }
   .bdf-name-input { flex: 1; font: inherit; font-size: 12px; padding: 3px 6px; border: 1px solid #e3e5e7; border-radius: 4px; min-width: 0; }
@@ -1516,7 +1636,6 @@ const STYLE = `
   .bdf-word { display: inline-flex; align-items: center; gap: 2px; font-size: 11px; background: #f1f2f3; color: #61666d; border-radius: 10px; padding: 1px 6px; }
   .bdf-word-x { border: 0; background: none; color: #9499a0; cursor: pointer; font-size: 12px; padding: 0; }
   .bdf-word-x:hover { color: #f56c6c; }
-  .bdf-panel[hidden] { display: none; }
 `
 
 const ORIGINAL_DISPLAY = new WeakMap()
@@ -1528,53 +1647,88 @@ function hideElement(element) {
 }
 
 function showElement(element) {
-  if (!ORIGINAL_DISPLAY.has(element)) {
-    if (element.dataset?.bdfHidden) {
-      element.style.display = ''
-      delete element.dataset.bdfHidden
-    }
-    return
+  if (ORIGINAL_DISPLAY.has(element)) {
+    element.style.display = ORIGINAL_DISPLAY.get(element) ?? ''
+    ORIGINAL_DISPLAY.delete(element)
+  } else if (element.dataset?.bdfHidden) {
+    element.style.display = ''
   }
-  element.style.display = ORIGINAL_DISPLAY.get(element) ?? ''
-  delete element.dataset.bdfHidden
-  ORIGINAL_DISPLAY.delete(element)
+  if (element.dataset) delete element.dataset.bdfHidden
+}
+
+function ensureVisible(element) {
+  if (
+    element.style.display !== 'none' &&
+    !element.hasAttribute('data-bdf-bot') &&
+    !element.dataset?.bdfHidden
+  ) {
+    return false
+  }
+  element.removeAttribute('data-bdf-bot')
+  element.style.display = ''
+  if (element.dataset) delete element.dataset.bdfHidden
+  return true
 }
 
 /**
  * 落判定结果。view='fish' 时只留机器人主评论（楼中楼在原节点里，天然保留）。
- * @param {{adapter:object, verdicts?:Map<string,boolean>, view?:'hot'|'new'|'fish'|'off'}} args
  */
-function applyView({ adapter, verdicts = new Map(), view = 'hot', readId }) {
+function applyView({ adapter, verdicts = new Map(), view = 'hot', readId, applied, elements }) {
   const getRpid = readId ?? ((element) => adapter.readComment(element).rpid)
+  const list = elements ?? adapter.listComments?.() ?? []
+  const incremental = Boolean(applied)
   const root = adapter?.root
-  if (!root) return
-  if (view === 'off') root.removeAttribute('data-bdf-view')
-  else root.setAttribute('data-bdf-view', view)
+  if (root) {
+    if (view === 'off') root.removeAttribute('data-bdf-view')
+    else root.setAttribute('data-bdf-view', view)
+  }
 
   const hasVerdicts = Boolean(verdicts?.size)
-  for (const element of adapter.listComments?.() ?? []) {
+
+  // 还没审核 / 关闭时：只保证全部可见，不做解析（首屏最快路径）
+  if ((!hasVerdicts || view === 'off') && view !== 'fish') {
+    for (const element of list) {
+      ensureVisible(element)
+      applied?.seen?.add(element)
+    }
+    if (incremental) {
+      applied.view = view
+      applied.map = new Map()
+    }
+    return
+  }
+
+  for (const element of list) {
     // 置顶评论永远显示，两种视图都不动它
     if (adapter.isPinned?.(element)) {
-      element.removeAttribute('data-bdf-bot')
-      element.style.display = ''
-      delete element.dataset.bdfHidden
+      ensureVisible(element)
+      applied?.seen?.add(element)
       continue
     }
-    if (view === 'off' || !hasVerdicts) {
-      element.removeAttribute('data-bdf-bot')
-      // 强制显示：可能被旧版本 / 上一次运行隐藏过
-      element.style.display = ''
-      delete element.dataset.bdfHidden
-      showElement(element)
-      continue
-    }
+
     const rpid = getRpid(element)
     const isBot = Boolean(verdicts.get(rpid))
+
+    if (
+      incremental &&
+      applied.view === view &&
+      applied.seen?.has(element) &&
+      applied.map?.get(rpid) === isBot
+    ) {
+      continue
+    }
+
     const flag = isBot ? '1' : '0'
     if (element.getAttribute('data-bdf-bot') !== flag) element.setAttribute('data-bdf-bot', flag)
     const shouldHide = view === 'fish' ? !isBot : isBot
     if (shouldHide) hideElement(element)
     else showElement(element)
+    applied?.seen?.add(element)
+  }
+
+  if (incremental) {
+    applied.view = view
+    applied.map = new Map(verdicts)
   }
 }
 
@@ -1585,7 +1739,7 @@ function buildPanel(document, settings, handlers) {
 
   const shadow = panel.attachShadow({ mode: 'open' })
   shadow.innerHTML = `
-    <style>${STYLE}</style>
+    <style>${STYLE}${STYLE_PANEL}</style>
     <div class="bdf-panel" hidden>
       <div class="bdf-card">
         <div class="bdf-card-title">大肥鱼过滤</div>
@@ -1618,10 +1772,10 @@ function buildPanel(document, settings, handlers) {
   const wrapper = shadow.querySelector('.bdf-panel')
   const enabled = shadow.querySelector('.bdf-enabled')
   const preset = shadow.querySelector('.bdf-preset')
-  const namelists = shadow.querySelector('.bdf-namelists')
   const nameInput = shadow.querySelector('.bdf-name-input')
   const addBlack = shadow.querySelector('.bdf-add-black')
   const addWhite = shadow.querySelector('.bdf-add-white')
+  const namelists = shadow.querySelector('.bdf-namelists')
   const wordInput = shadow.querySelector('.bdf-word-input')
   const wordAdd = shadow.querySelector('.bdf-word-add')
   const wordList = shadow.querySelector('.bdf-word-list')
@@ -1634,7 +1788,7 @@ function buildPanel(document, settings, handlers) {
   enabled.addEventListener('change', onEnabled)
   preset.addEventListener('change', onPreset)
 
-  function refreshWords() {
+  const refreshWords = () => {
     const words = handlers.getWords?.() ?? []
     wordList.innerHTML = ''
     for (const word of words) {
@@ -1654,21 +1808,7 @@ function buildPanel(document, settings, handlers) {
     }
   }
 
-  const onWordAdd = () => {
-    const value = wordInput.value.trim()
-    if (!value) return
-    handlers.onAddWord?.(value)
-    wordInput.value = ''
-    refreshWords()
-  }
-  const onWordKey = (event) => {
-    if (event.key === 'Enter') onWordAdd()
-  }
-  wordAdd.addEventListener('click', onWordAdd)
-  wordInput.addEventListener('keydown', onWordKey)
-
-  function refreshLists() {
-    if (wrapper.hidden) return
+  const refreshLists = () => {
     const { white = [], black = [] } = handlers.getLists?.() ?? {}
     namelists.innerHTML = ''
     const section = (title, rows) => {
@@ -1702,21 +1842,34 @@ function buildPanel(document, settings, handlers) {
     section('白名单（永远显示）', white)
   }
 
-  const onAddToList = (verdict) => {
+  const addToList = (verdict) => {
     const value = nameInput.value.trim()
     if (!value) return
     handlers.onAddName?.(value, verdict)
     nameInput.value = ''
     refreshLists()
   }
-  const onAddBlack = () => onAddToList('bot')
-  const onAddWhite = () => onAddToList('human')
+  const onAddBlack = () => addToList('bot')
+  const onAddWhite = () => addToList('human')
   const onNameKey = (event) => {
-    if (event.key === 'Enter') onAddToList('bot')
+    if (event.key === 'Enter') addToList('bot')
   }
   addBlack.addEventListener('click', onAddBlack)
   addWhite.addEventListener('click', onAddWhite)
   nameInput.addEventListener('keydown', onNameKey)
+
+  const onWordAdd = () => {
+    const value = wordInput.value.trim()
+    if (!value) return
+    handlers.onAddWord?.(value)
+    wordInput.value = ''
+    refreshWords()
+  }
+  const onWordKey = (event) => {
+    if (event.key === 'Enter') onWordAdd()
+  }
+  wordAdd.addEventListener('click', onWordAdd)
+  wordInput.addEventListener('keydown', onWordKey)
 
   return {
     element: panel,
@@ -1731,11 +1884,11 @@ function buildPanel(document, settings, handlers) {
     dispose() {
       enabled.removeEventListener('change', onEnabled)
       preset.removeEventListener('change', onPreset)
+      nameInput.removeEventListener('keydown', onNameKey)
+      wordInput.removeEventListener('keydown', onWordKey)
       addBlack.removeEventListener('click', onAddBlack)
       addWhite.removeEventListener('click', onAddWhite)
-      nameInput.removeEventListener('keydown', onNameKey)
       wordAdd.removeEventListener('click', onWordAdd)
-      wordInput.removeEventListener('keydown', onWordKey)
       panel.remove()
     },
   }
@@ -1777,20 +1930,25 @@ function mountControls({
   if (row) row.appendChild(slot)
   else document.body.appendChild(slot)
 
-  const panel = buildPanel(document, settings, {
-    onToggle,
-    onPresetChange,
-    onAddName,
-    onRemove,
-    getLists,
-    getWords,
-    onAddWord,
-    onRemoveWord,
-  })
-  document.body.appendChild(panel.element)
+  let panel = null
+  function ensurePanel() {
+    if (!panel) {
+      panel = buildPanel(document, settings, {
+        onToggle,
+        onPresetChange,
+        onAddName,
+        onRemove,
+        getLists,
+        getWords,
+        onAddWord,
+        onRemoveWord,
+      })
+      document.body.appendChild(panel.element)
+    }
+    return panel
+  }
 
   let fishActive = false
-
   function setActive(active) {
     fishActive = Boolean(active)
     tab.classList.toggle('is-active', fishActive)
@@ -1807,10 +1965,9 @@ function mountControls({
     }
     if (path.includes(gear)) {
       event.stopPropagation()
-      panel.toggle()
+      ensurePanel().toggle()
       return
     }
-    // 点原生「最热 / 最新 / 热门」时同步视图状态
     const text = String(event.target?.textContent ?? '').trim()
     if (text === '最热' || text === '热门') {
       setActive(false)
@@ -1828,17 +1985,19 @@ function mountControls({
 
   function dispose() {
     document.removeEventListener('click', onDocumentClick, true)
-    panel.dispose()
+    panel?.dispose()
     slot.remove()
   }
 
   return {
     tab,
     count,
-    panel,
+    get panel() {
+      return panel
+    },
     setBadge,
     setActive,
-    refreshLists: panel.refreshLists,
+    refreshLists: () => panel?.refreshLists?.(),
     dispose,
   }
 }
