@@ -1,11 +1,11 @@
 import {
   MODEL_NAME,
   LONG_MIN_LENGTH,
-  FISH_STRONG,
+  FISH_STRONG_RE,
+  FISH_LIFE_RE,
   FISH_WEAK,
   PERSONA,
   MASTER,
-  FISH_LIFE,
   KAOMOJI,
   AT_START,
   SEEK_APPROVAL,
@@ -44,7 +44,8 @@ export function classifyComment(comment, ctx = {}) {
     score += 6
     reasons.push(`名字:${modelHit[0]}`)
   } else {
-    const fishHit = FISH_STRONG.find((word) => name.includes(word))
+    const fishMatch = FISH_STRONG_RE.exec(name)
+    const fishHit = fishMatch?.[0]
     if (fishHit) {
       score += 4
       reasons.push(`名字:${fishHit}`)
@@ -64,7 +65,13 @@ export function classifyComment(comment, ctx = {}) {
     score += 2
     reasons.push('文风:主人')
   }
-  const lifeHits = FISH_LIFE.filter((word) => message.includes(word))
+  const lifeHits = []
+  FISH_LIFE_RE.lastIndex = 0
+  let lifeMatch = FISH_LIFE_RE.exec(message)
+  while (lifeMatch && lifeHits.length < 3) {
+    if (!lifeHits.includes(lifeMatch[0])) lifeHits.push(lifeMatch[0])
+    lifeMatch = FISH_LIFE_RE.exec(message)
+  }
   if (lifeHits.length) {
     score += Math.min(2, lifeHits.length)
     reasons.push(`文风:${lifeHits[0]}`)

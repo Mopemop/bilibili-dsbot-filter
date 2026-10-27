@@ -30,7 +30,7 @@ export const PERSONA = /本(?:公主|鲸|鱼|喵|殿下|座|宫|宝宝)|人家|�
 /** 主人（2 分） */
 export const MASTER = /主人/
 
-/** 鱼生梗词（每命中 1 个 1 分，上限 2 分） */
+/** 鱼生梗词（每个命中 1 分，上限 2 分） */
 export const FISH_LIFE = ['搬砖', '白饭', '鸡腿', '房租', '鱼粮']
 
 /** 颜文字 / 表情（1 分） */
@@ -45,3 +45,18 @@ export const SEEK_APPROVAL = /厉害吧|不好啦|我要发给我的主人|有�
 /** 长文结构：≥50 字且带破折号 / 引号 / 空行 / 分号（1 分） */
 export const LONG_MIN_LENGTH = 50
 export const LONG_STRUCTURE = /——|「|\n\s*\n|；/
+
+/* ------------------------------------------------------------------ */
+/* 多模式匹配：一次扫描命中整组词，替代「每个词 includes 一遍」            */
+/* ------------------------------------------------------------------ */
+
+const escapeRe = (word) => String(word).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+function compileAlternation(words, flags = '') {
+  const ordered = [...words].sort((a, b) => b.length - a.length)
+  return new RegExp(ordered.map(escapeRe).join('|'), flags)
+}
+
+/** 长词优先，避免「鲸」抢先命中「鲸鱼」 */
+export const FISH_STRONG_RE = compileAlternation(FISH_STRONG)
+export const FISH_LIFE_RE = compileAlternation(FISH_LIFE, 'g')

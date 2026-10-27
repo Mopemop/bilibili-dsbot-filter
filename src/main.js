@@ -7,7 +7,7 @@ import { DEBUG } from './core/debug.js'
 import { applyView, mountControls } from './ui/mount.js'
 
 const VIDEO_URL = /^https?:\/\/www\.bilibili\.com\/video\//
-const VERSION = '1.8.0'
+const VERSION = '1.9.0'
 
 function memoryStorage() {
   const map = new Map()

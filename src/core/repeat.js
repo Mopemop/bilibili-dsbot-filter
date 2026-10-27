@@ -15,16 +15,33 @@ export function normalizeMessage(message) {
 }
 
 const SHINGLE_CACHE = new Map()
+const BASE = 131
+
+/** 24 字窗口 → 32 位滚动哈希（Rabin-Karp + Math.imul），不为每个窗口分配子串 */
+function hashWindow(text) {
+  const n = text.length
+  if (n < SHINGLE) return []
+  let hash = 0
+  let pow = 1
+  for (let i = 0; i < SHINGLE; i += 1) {
+    hash = (Math.imul(hash, BASE) + text.charCodeAt(i)) >>> 0
+    if (i > 0) pow = (Math.imul(pow, BASE)) >>> 0
+  }
+  const out = [hash]
+  for (let i = SHINGLE; i < n; i += 1) {
+    const outChar = text.charCodeAt(i - SHINGLE)
+    hash = (Math.imul((hash - Math.imul(pow, outChar)) >>> 0, BASE) + text.charCodeAt(i)) >>> 0
+    out.push(hash)
+  }
+  return out
+}
 
 function shingles(text) {
   if (SHINGLE_CACHE.has(text)) return SHINGLE_CACHE.get(text)
-  const out = new Set()
-  if (text.length >= SHINGLE) {
-    for (let i = 0; i + SHINGLE <= text.length; i += 1) out.add(text.slice(i, i + SHINGLE))
-  }
+  const hashes = hashWindow(text)
   if (SHINGLE_CACHE.size > 2000) SHINGLE_CACHE.clear()
-  SHINGLE_CACHE.set(text, out)
-  return out
+  SHINGLE_CACHE.set(text, hashes)
+  return hashes
 }
 
 /**
@@ -40,7 +57,7 @@ export function detectDuplicate(comments) {
 
   for (const comment of comments ?? []) {
     const grams = shingles(normalizeMessage(comment.message))
-    if (!grams.size) continue
+    if (!grams.length) continue
     const local = new Set()
     for (const gram of grams) {
       if (local.has(gram)) continue

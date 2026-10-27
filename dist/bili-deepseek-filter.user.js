@@ -2,7 +2,7 @@
 // @name         B站大肥鱼过滤器（DeepSeek 机器人）
 // @name:en      Bilibili DeepSeek Bot Comment Filter
 // @name:zh-CN   B站大肥鱼过滤器（DeepSeek 机器人）
-// @version      1.8.0
+// @version      1.9.0
 // @description  在 B 站视频评论区识别 DeepSeek「大肥鱼」机器人的主评论：最新/最热里隐藏，新增「大肥鱼」视图只展示它们及其楼中楼。
 // @description:en  Filter DeepSeek bot comments on Bilibili video pages: hide them in "Hot/Latest", add a "Big Fat Fish" tab that only shows the detected bot comments.
 // @description:zh-CN  在 B 站视频评论区识别 DeepSeek「大肥鱼」机器人的主评论：最新/最热里隐藏，新增「大肥鱼」视图只展示它们及其楼中楼。
@@ -41,7 +41,7 @@ const { createStore, createDb } = __require("src/core/store.js");
 const { DEBUG } = __require("src/core/debug.js");
 const { applyView, mountControls } = __require("src/ui/mount.js");
 const VIDEO_URL = /^https?:\/\/www\.bilibili\.com\/video\//
-const VERSION = '1.8.0'
+const VERSION = '1.9.0'
 
 function memoryStorage() {
   const map = new Map()
@@ -1082,7 +1082,7 @@ Object.assign(exports, { createV1, v1 });
 });
 
 __define("src/core/score.js", function (exports, __require) {
-const { MODEL_NAME, LONG_MIN_LENGTH, FISH_STRONG, FISH_WEAK, PERSONA, MASTER, FISH_LIFE, KAOMOJI, AT_START, SEEK_APPROVAL, LONG_STRUCTURE } = __require("src/core/lexicon.js");
+const { MODEL_NAME, LONG_MIN_LENGTH, FISH_STRONG_RE, FISH_LIFE_RE, FISH_WEAK, PERSONA, MASTER, KAOMOJI, AT_START, SEEK_APPROVAL, LONG_STRUCTURE } = __require("src/core/lexicon.js");
 const { detectDuplicate } = __require("src/core/repeat.js");
 /** 标准档宁可漏一点；激进档把「名字带鱼/鲸」直接判死 */
 const THRESHOLDS = { standard: 5, aggressive: 3 }
@@ -1115,7 +1115,8 @@ function classifyComment(comment, ctx = {}) {
     score += 6
     reasons.push(`名字:${modelHit[0]}`)
   } else {
-    const fishHit = FISH_STRONG.find((word) => name.includes(word))
+    const fishMatch = FISH_STRONG_RE.exec(name)
+    const fishHit = fishMatch?.[0]
     if (fishHit) {
       score += 4
       reasons.push(`名字:${fishHit}`)
@@ -1135,7 +1136,13 @@ function classifyComment(comment, ctx = {}) {
     score += 2
     reasons.push('文风:主人')
   }
-  const lifeHits = FISH_LIFE.filter((word) => message.includes(word))
+  const lifeHits = []
+  FISH_LIFE_RE.lastIndex = 0
+  let lifeMatch = FISH_LIFE_RE.exec(message)
+  while (lifeMatch && lifeHits.length < 3) {
+    if (!lifeHits.includes(lifeMatch[0])) lifeHits.push(lifeMatch[0])
+    lifeMatch = FISH_LIFE_RE.exec(message)
+  }
   if (lifeHits.length) {
     score += Math.min(2, lifeHits.length)
     reasons.push(`文风:${lifeHits[0]}`)
@@ -1261,7 +1268,7 @@ const PERSONA = /本(?:公主|鲸|鱼|喵|殿下|座|宫|宝宝)|人家|我作�
 /** 主人（2 分） */
 const MASTER = /主人/
 
-/** 鱼生梗词（每命中 1 个 1 分，上限 2 分） */
+/** 鱼生梗词（每个命中 1 分，上限 2 分） */
 const FISH_LIFE = ['搬砖', '白饭', '鸡腿', '房租', '鱼粮']
 
 /** 颜文字 / 表情（1 分） */
@@ -1277,7 +1284,22 @@ const SEEK_APPROVAL = /厉害吧|不好啦|我要发给我的主人|有被冒犯
 const LONG_MIN_LENGTH = 50
 const LONG_STRUCTURE = /——|「|\n\s*\n|；/
 
-Object.assign(exports, { MODEL_NAME, FISH_STRONG, FISH_WEAK, PERSONA, MASTER, FISH_LIFE, KAOMOJI, AT_START, SEEK_APPROVAL, LONG_MIN_LENGTH, LONG_STRUCTURE });
+/* ------------------------------------------------------------------ */
+/* 多模式匹配：一次扫描命中整组词，替代「每个词 includes 一遍」            */
+/* ------------------------------------------------------------------ */
+
+const escapeRe = (word) => String(word).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+function compileAlternation(words, flags = '') {
+  const ordered = [...words].sort((a, b) => b.length - a.length)
+  return new RegExp(ordered.map(escapeRe).join('|'), flags)
+}
+
+/** 长词优先，避免「鲸」抢先命中「鲸鱼」 */
+const FISH_STRONG_RE = compileAlternation(FISH_STRONG)
+const FISH_LIFE_RE = compileAlternation(FISH_LIFE, 'g')
+
+Object.assign(exports, { MODEL_NAME, FISH_STRONG, FISH_WEAK, PERSONA, MASTER, FISH_LIFE, KAOMOJI, AT_START, SEEK_APPROVAL, LONG_MIN_LENGTH, LONG_STRUCTURE, FISH_STRONG_RE, FISH_LIFE_RE });
 });
 
 __define("src/core/repeat.js", function (exports, __require) {
@@ -1299,16 +1321,33 @@ function normalizeMessage(message) {
 }
 
 const SHINGLE_CACHE = new Map()
+const BASE = 131
+
+/** 24 字窗口 → 32 位滚动哈希（Rabin-Karp + Math.imul），不为每个窗口分配子串 */
+function hashWindow(text) {
+  const n = text.length
+  if (n < SHINGLE) return []
+  let hash = 0
+  let pow = 1
+  for (let i = 0; i < SHINGLE; i += 1) {
+    hash = (Math.imul(hash, BASE) + text.charCodeAt(i)) >>> 0
+    if (i > 0) pow = (Math.imul(pow, BASE)) >>> 0
+  }
+  const out = [hash]
+  for (let i = SHINGLE; i < n; i += 1) {
+    const outChar = text.charCodeAt(i - SHINGLE)
+    hash = (Math.imul((hash - Math.imul(pow, outChar)) >>> 0, BASE) + text.charCodeAt(i)) >>> 0
+    out.push(hash)
+  }
+  return out
+}
 
 function shingles(text) {
   if (SHINGLE_CACHE.has(text)) return SHINGLE_CACHE.get(text)
-  const out = new Set()
-  if (text.length >= SHINGLE) {
-    for (let i = 0; i + SHINGLE <= text.length; i += 1) out.add(text.slice(i, i + SHINGLE))
-  }
+  const hashes = hashWindow(text)
   if (SHINGLE_CACHE.size > 2000) SHINGLE_CACHE.clear()
-  SHINGLE_CACHE.set(text, out)
-  return out
+  SHINGLE_CACHE.set(text, hashes)
+  return hashes
 }
 
 /**
@@ -1324,7 +1363,7 @@ function detectDuplicate(comments) {
 
   for (const comment of comments ?? []) {
     const grams = shingles(normalizeMessage(comment.message))
-    if (!grams.size) continue
+    if (!grams.length) continue
     const local = new Set()
     for (const gram of grams) {
       if (local.has(gram)) continue
